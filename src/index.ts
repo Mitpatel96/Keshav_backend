@@ -1,116 +1,45 @@
-// Project: Keshav Admin & Vendor Panel API (Node + TypeScript + MongoDB)
-// Structure (files concatenated below). Save as a fresh project and run `npm install` then `npm run dev`.
+import express from 'express';
+import dotenv from 'dotenv';
+import morgan from 'morgan';
+import cors from 'cors';
+import connectDB from './config/db';
+import userRoutes from './routes/userRoutes';
+import vendorRoutes from './routes/vendorRoutes';
+import skuRoutes from './routes/skuRoutes';
+import inventoryRoutes from './routes/inventoryRoutes';
+import promoRoutes from './routes/promoRoutes';
+import orderRoutes from './routes/orderRoutes';
+import pickupRoutes from './routes/pickupRoutes';
+import damageRoutes from './routes/damageRoutes';
+import paymentRoutes from './routes/paymentRoutes';
+
+
+dotenv.config();
+const app = express();
+app.use(express.json());
+app.use(cors());
+app.use(morgan('dev'));
+
+const PORT = process.env.PORT || 5000;
+
+connectDB();
+
+app.use('/api/users', userRoutes);
+app.use('/api/vendors', vendorRoutes);
+app.use('/api/payment', paymentRoutes);
+app.use('/api/skus', skuRoutes);
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api/promos', promoRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/pickups', pickupRoutes);
+app.use('/api/damage', damageRoutes);
+
+app.get('/', (_req, res) => res.send('Keshav Admin API running'));
+
+app.use((err: any, _req: express.Request, res: express.Response, _next: any) => {
+  const status = err.status || 500;
+  res.status(status).json({ message: err.message || 'Server Error' });
+});
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// ---------- package.json ----------
-
-
-
-// ---------- tsconfig.json ----------
-
-
-
-// ---------- .env.example ----------
-// MONGO_URI=mongodb://localhost:27017/keshav
-// JWT_SECRET=your_jwt_secret_here
-// PORT=5000
-
-
-// ---------- src/index.ts ----------
-
-// ---------- src/config/db.ts ----------
-
-// ---------- src/models/User.ts ----------
-
-
-// ---------- src/models/Vendor.ts ----------
-
-// ---------- src/models/Sku.ts ----------
-
-// ---------- src/models/Inventory.ts ----------
-
-// ---------- src/models/Promo.ts ----------
-
-
-// ---------- src/models/Order.ts ----------
-
-
-// ---------- src/models/PickupPoint.ts ----------
-
-// ---------- src/models/DamageTicket.ts ----------
-
-// ---------- src/middleware/auth.ts ----------
-
-
-// ---------- src/utils/idGenerator.ts ----------
-
-// ---------- src/controllers/userController.ts ----------
-
-
-// ---------- src/controllers/vendorController.ts ----------
-
-
-// ---------- src/controllers/skuController.ts ----------
-
-
-// ---------- src/controllers/inventoryController.ts ----------
-
-
-// ---------- src/controllers/promoController.ts ----------
-
-
-
-// ---------- src/controllers/orderController.ts ----------
-
-
-// ---------- src/controllers/pickupController.ts ----------
-
-
-
-// ---------- src/controllers/damageController.ts ----------
-
-
-
-// ---------- src/routes/userRoutes.ts ----------
-
-
-// ---------- src/routes/vendorRoutes.ts ----------
-
-
-
-// ---------- src/routes/skuRoutes.ts ----------
-
-
-
-// ---------- src/routes/inventoryRoutes.ts ----------
-
-
-// ---------- src/routes/promoRoutes.ts ----------
-
-
-// ---------- src/routes/orderRoutes.ts ----------
-
-// ---------- src/routes/pickupRoutes.ts ----------
-
-
-// ---------- src/routes/damageRoutes.ts ----------
-
-
-// ---------- README.md ----------
-/* # Keshav Admin API
-
-This repository provides a starter Node + TypeScript + MongoDB API implementing Admin & Vendor flows for inventory, SKUs, vendors, pickup points, promos, orders, and damage/loss tickets.
-
-## Quick start
-1. Copy files into project
-2. `npm install`
-3. Create `.env` from `.env.example`
-4. `npm run dev`
-
-## Notes
-- Auth is JWT-based; adminOnly middleware checks for role === 'admin'.
-- For production, improve validation, error handling, rate limiting, and file uploads (documents/images).
-- Extend models with more granular accounting, commission handling, and audit logs as needed.
-
-
-// End of concatenated files
-*/
