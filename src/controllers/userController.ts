@@ -33,7 +33,7 @@ export const registerUser = asyncHandler(async (req: Request, res: Response): Pr
     role: role || 'user',
   });
 
-  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'secret', { expiresIn: '7d' });
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET as any, { expiresIn: '7d' });
   res.status(201).json({ user, token });
 });
 

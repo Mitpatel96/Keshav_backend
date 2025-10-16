@@ -40,7 +40,8 @@ export const confirmPayment = asyncHandler(async (req: Request, res: Response) =
       { status: 'succeeded' },
       { new: true }
     );
-    return res.json({ message: 'Payment successful', payment });
+    res.json({ message: 'Payment successful', payment });
+    return;
   }
 
   res.json({ message: 'Payment not yet completed', status: intent.status });
@@ -53,6 +54,9 @@ export const getAllPayments = asyncHandler(async (_req: Request, res: Response) 
 
 export const getSinglePayment = asyncHandler(async (req: Request, res: Response) => {
   const payment = await Payment.findById(req.params.id);
-  if (!payment) return res.status(404).json({ message: 'Payment not found' });
+  if (!payment) {
+    res.status(404).json({ message: 'Payment not found' });
+    return;
+  }
   res.json(payment);
 });

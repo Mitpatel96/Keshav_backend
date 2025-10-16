@@ -2,9 +2,11 @@ import express from 'express';
 import { addVendor, getVendors, getVendorById, updateVendor, deactivateVendor } from '../controllers/vendorController';
 import { protect, adminOnly } from '../middleware/auth';
 const router = express.Router();
+
 router.post('/', protect, adminOnly, addVendor);
 router.get('/', protect, adminOnly, getVendors);
 router.get('/:id', protect, adminOnly, getVendorById);
 router.put('/:id', protect, adminOnly, updateVendor);
 router.post('/:id/deactivate', protect, adminOnly, deactivateVendor);
+
 export default router;
