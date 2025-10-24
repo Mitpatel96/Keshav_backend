@@ -4,46 +4,110 @@ import User from '../models/User';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { generatePermanentId } from '../utils/idGenerator';
+import { sendWelcomeEmail } from '../services/mailService';
 
-// REGISTER USER
 export const registerUser = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const { name, email, phone, password, role } = req.body;
+  const { name, email, phone, password, role, dob } = req.body;
 
-  if (!name || !email) {
-    res.status(400).json({ message: 'Name and email required' });
+  if (!name || !email || !phone || !dob) {
+    res.status(400).json({ message: 'Name, email, phone number, and date of birth are required' });
     return;
   }
 
-  const existing = await User.findOne({ email });
-  if (existing) {
-    res.status(400).json({ message: 'Email already used' });
+  const dobDate = new Date(dob);
+  if (isNaN(dobDate.getTime())) {
+    res.status(400).json({ message: 'Invalid date of birth format' });
     return;
+  }
+
+  const existingUser = await User.findOne({ phone });
+  if (existingUser && existingUser.temporaryUser) {
+    const updatedUser = await User.findByIdAndUpdate(
+      existingUser._id,
+      {
+        name,
+        email,
+        password,
+        dob: dobDate,
+        role: role || 'user',
+        temporaryUser: false
+      },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      res.status(500).json({ message: 'Failed to update user' });
+      return;
+    }
+
+    try {
+      const generatedPassword = password || 'temporary_password'; 
+      await sendWelcomeEmail(email, name, email, generatedPassword);
+    } catch (emailError) {
+      console.error('Failed to send welcome email:', emailError);
+    }
+
+    const token = jwt.sign({ id: updatedUser._id }, process.env.JWT_SECRET as any, { expiresIn: '7d' });
+    res.status(200).json({ user: updatedUser, token });
+    return;
+  }
+
+  // Check for other existing users with same email or phone
+  const emailOrPhoneConditions: any[] = [{ email }];
+  if (phone) {
+    emailOrPhoneConditions.push({ phone });
+  }
+
+  const duplicateUser = await User.findOne({
+    $or: emailOrPhoneConditions
+  });
+
+  if (duplicateUser) {
+    if (duplicateUser.email === email) {
+      res.status(400).json({ message: 'Email already used' });
+      return;
+    }
+    if (duplicateUser.phone === phone) {
+      res.status(400).json({ message: 'Phone number already used' });
+      return;
+    }
   }
 
   const count = await User.countDocuments();
   const permanentId = generatePermanentId('U', count + 1);
-  const hashed = password ? await bcrypt.hash(password, 10) : undefined;
 
   const user = await User.create({
     permanentId,
     name,
     email,
     phone,
-    password: hashed,
+    password: password,
+    dob: dobDate,
     role: role || 'user',
   });
+
+  try {
+    const generatedPassword = password || 'temporary_password';
+    await sendWelcomeEmail(email, name, email, generatedPassword);
+  } catch (emailError) {
+    console.error('Failed to send welcome email:', emailError);
+  }
 
   const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET as any, { expiresIn: '7d' });
   res.status(201).json({ user, token });
 });
 
-// LOGIN USER
 export const loginUser = asyncHandler(async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body;
 
   const user = await User.findOne({ email });
   if (!user) {
-    res.status(401).json({ message: 'Invalid credentials' });
+    res.status(401).json({ message: 'Invalid email' });
+    return;
+  }
+  const isPasswordMatch = await User.findOne({ password });
+  if (!isPasswordMatch) {
+    res.status(401).json({ message: 'Invalid password' });
     return;
   }
 
@@ -52,19 +116,36 @@ export const loginUser = asyncHandler(async (req: Request, res: Response): Promi
     return;
   }
 
-  // TypeScript knows user.password is string here
-  const match = await bcrypt.compare(password, user.password);
-  if (!match) {
-    res.status(401).json({ message: 'Invalid credentials' });
-    return;
-  }
-
   const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'secret', { expiresIn: '7d' });
   res.json({ user, token });
 });
 
-// GET ALL USERS
 export const getUsers = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const users = await User.find().select('-password');
-  res.json(users);
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const skip = (page - 1) * limit;
+
+  try {
+    const users = await User.find()
+      .select('-password')
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 });
+
+    const totalCount = await User.countDocuments();
+
+    res.json({
+      data: users,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalCount,
+        hasNextPage: page < Math.ceil(totalCount / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ message: 'Internal server error while fetching users' });
+  }
 });

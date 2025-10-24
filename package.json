@@ -4,19 +4,32 @@
     "private": true,
     "scripts": {
         "build": "tsc",
-        "start": "node dist/index.js",
-        "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "clean": "npx rimraf ./build",
+        "start": "node build/server.js",
+        "dist": "sh ./scripts/build.sh",
+        "ebs": "./ebs.sh",
+        "debug": "npm run dev",
+        "server": "tsc-watch --outDir ./build --onSuccess \"npm run start -- --mode=http\" --onFailure \"echo ERROR! Compilation Failed\"",
+        "dev": "set NODE_ENV=default&& npm run server",
+        "prod": "set NODE_ENV=production&& npm run server"
     },
     "dependencies": {
+        "@aws-sdk/client-s3": "^3.913.0",
         "bcryptjs": "^2.4.3",
         "cors": "^2.8.5",
         "dotenv": "^16.0.0",
         "express": "^4.18.2",
         "express-async-handler": "^1.2.0",
         "jsonwebtoken": "^9.0.0",
-        "mongoose": "^7.2.2",
+        "mongoose": "^7.8.7",
         "morgan": "^1.10.1",
-        "stripe": "^19.1.0"
+        "multer": "^2.0.2",
+        "multer-s3": "^3.0.1",
+        "nodemailer": "^7.0.9",
+        "sharp": "^0.34.4",
+        "stripe": "^19.1.0",
+        "tsc-watch": "^7.2.0"
     },
     "devDependencies": {
         "@types/bcryptjs": "^2.4.6",
@@ -25,7 +38,11 @@
         "@types/jsonwebtoken": "^9.0.2",
         "@types/mongoose": "^5.11.97",
         "@types/morgan": "^1.9.10",
+        "@types/multer": "^2.0.0",
         "@types/node": "^20.2.5",
+        "@types/nodemailer": "^7.0.2",
+        "@types/sharp": "^0.31.1",
+        "nodemon": "^3.1.10",
         "ts-node-dev": "^2.0.0",
         "typescript": "^5.1.6"
     }

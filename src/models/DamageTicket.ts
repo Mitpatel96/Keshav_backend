@@ -14,11 +14,12 @@ const DamageTicketSchema: Schema = new Schema(
   {
     inventory: { type: Schema.Types.ObjectId, ref: 'Inventory' },
     vendor: { type: Schema.Types.ObjectId, ref: 'Vendor' },
+    approvedByAdmin: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     sku: { type: Schema.Types.ObjectId, ref: 'Sku' },
     quantity: { type: Number, required: true },
     type: { type: String, enum: ['damage', 'lost'], required: true },
     reason: { type: String },
-    status: { type: String, enum: ['pending','approved','rejected'], default: 'pending' }
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' }
   },
   { timestamps: true }
 );

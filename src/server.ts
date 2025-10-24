@@ -12,6 +12,7 @@ import orderRoutes from './routes/orderRoutes';
 import pickupRoutes from './routes/pickupRoutes';
 import damageRoutes from './routes/damageRoutes';
 import paymentRoutes from './routes/paymentRoutes';
+import uploadRoutes from './routes/uploadRoutes';
 
 
 dotenv.config();
@@ -33,6 +34,7 @@ app.use('/api/promos', promoRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/pickups', pickupRoutes);
 app.use('/api/damage', damageRoutes);
+app.use('/api/upload', uploadRoutes);
 
 app.get('/', (_req, res) => res.send('Keshav Admin API running'));
 

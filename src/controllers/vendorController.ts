@@ -3,25 +3,151 @@ import asyncHandler from 'express-async-handler';
 import Vendor from '../models/Vendor';
 import User from '../models/User';
 import { generatePermanentId } from '../utils/idGenerator';
+import { sendWelcomeEmail } from '../services/mailService';
+import bcrypt from 'bcryptjs';
 
 export const addVendor = asyncHandler(async (req: Request, res: Response) => {
-  const { name, phone, email, address, documents, state, city, area } = req.body;
-  const count = await Vendor.countDocuments();
-  const permanentId = generatePermanentId('V', count + 1);
-  const vendor = await Vendor.create({ permanentId, name, phone, email, address, documents, state, city, area });
-  // Create vendor user record too
-  await User.create({ permanentId, name, email, role: 'vendor', active: true });
-  res.status(201).json(vendor);
+  const { name, phone, email, address, documents, state, city, area, dob } = req.body;
+
+  // Validate required fields
+  if (!name || !phone || !email || !dob) {
+    res.status(400).json({ message: 'Name, phone number, email, and date of birth are required' });
+    return;
+  }
+
+  // Validate date of birth format
+  const dobDate = new Date(dob);
+  if (isNaN(dobDate.getTime())) {
+    res.status(400).json({ message: 'Invalid date of birth format' });
+    return;
+  }
+
+  const existingConditions: any[] = [];
+  if (email) {
+    existingConditions.push({ email });
+  }
+  if (phone) {
+    existingConditions.push({ phone });
+  }
+
+  if (existingConditions.length > 0) {
+    const existingVendor = await Vendor.findOne({
+      $or: existingConditions
+    });
+
+    if (existingVendor) {
+      if (existingVendor.email === email) {
+        res.status(400).json({ message: 'Email already used by another vendor' });
+        return;
+      }
+      if (existingVendor.phone === phone) {
+        res.status(400).json({ message: 'Phone number already used by another vendor' });
+        return;
+      }
+    }
+  }
+
+  try {
+    const lastVendor = await Vendor.findOne({}, { permanentId: 1 }).sort({ permanentId: -1 });
+    let nextNumber = 1001;
+
+    if (lastVendor && lastVendor.permanentId) {
+      const lastNumber = parseInt(lastVendor.permanentId.replace('V', ''));
+      if (!isNaN(lastNumber)) {
+        nextNumber = lastNumber + 1;
+      }
+    }
+
+    const permanentId = generatePermanentId('V', nextNumber);
+
+    const existingWithSameId = await Vendor.findOne({ permanentId });
+    if (existingWithSameId) {
+      res.status(500).json({ message: 'Internal server error: duplicate vendor ID generated' });
+      return;
+    }
+
+    const generatedPassword = Math.random().toString(36).slice(-8);
+
+    const vendorData = {
+      vendorId: permanentId,
+      permanentId,
+      name,
+      phone,
+      email,
+      address,
+      documents,
+      state,
+      city,
+      area,
+      dob: dobDate
+    };
+
+    const vendor = await Vendor.create(vendorData);
+    
+    // Create vendor user record too
+    const vendorUser = await User.create({ 
+      permanentId, 
+      name, 
+      email, 
+      phone,
+      password: generatedPassword,
+      dob: dobDate,
+      role: 'vendor', 
+      active: true 
+    });
+
+    try {
+      await sendWelcomeEmail(email, name, email, generatedPassword);
+    } catch (emailError) {
+      console.error('Failed to send welcome email:', emailError);
+    }
+
+    res.status(201).json({ vendor, vendorUser });
+  } catch (error: any) {
+    console.error('Error creating vendor:', error);
+    if (error.code === 11000) {
+      const duplicateField = Object.keys(error.keyPattern)[0];
+      res.status(400).json({
+        message: `Duplicate entry for field: ${duplicateField}. Please use a different value.`
+      });
+    } else {
+      res.status(500).json({ message: 'Internal server error while creating vendor' });
+    }
+  }
 });
 
 export const getVendors = asyncHandler(async (req: Request, res: Response) => {
-  const vendors = await Vendor.find();
-  res.json(vendors);
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const skip = (page - 1) * limit;
+
+  try {
+    const vendors = await Vendor.find()
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1 });
+
+    const totalCount = await Vendor.countDocuments();
+
+    res.json({
+      data: vendors,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalCount,
+        hasNextPage: page < Math.ceil(totalCount / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching vendors:', error);
+    res.status(500).json({ message: 'Internal server error while fetching vendors' });
+  }
 });
 
-export const getVendorById = asyncHandler(async (req: Request, res: Response):Promise<void>  => {
+export const getVendorById = asyncHandler(async (req: Request, res: Response): Promise<void> => {
   const vendor = await Vendor.findById(req.params.id);
-  if (!vendor)  res.status(404).json({ message: 'Vendor not found' });
+  if (!vendor) res.status(404).json({ message: 'Vendor not found' });
   res.json(vendor);
 });
 

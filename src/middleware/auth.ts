@@ -13,6 +13,7 @@ export const protect = async (req: AuthRequest, res: Response, next: NextFunctio
       token = req.headers.authorization.split(' ')[1];
       const decoded: any = jwt.verify(token, process.env.JWT_SECRET || 'secret');
       const user = await User.findById(decoded.id).select('-password');
+      console.log("Requested User ==>", user)
       if (!user) return res.status(401).json({ message: 'User not found' });
       req.user = user;
       next();
