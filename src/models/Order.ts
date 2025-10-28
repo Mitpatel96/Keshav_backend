@@ -3,11 +3,14 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IOrder extends Document {
   user: Schema.Types.ObjectId;
   vendor: Schema.Types.ObjectId;
-  items: Array<{ sku: Schema.Types.ObjectId; quantity: number; price: number; }>; 
+  items: Array<{ sku: Schema.Types.ObjectId; quantity: number; price: number; }>;
   totalAmount: number;
-  paymentMethod: 'online' | 'pickup';
-  status: 'placed' | 'pending_pickup' | 'completed' | 'cancelled';
-  verificationCode?: string; // 8-digit
+  paymentMethod: 'online' | 'pickup' | 'cash';
+  status: 'placed' | 'pending_pickup' | 'pending_verification' | 'confirmed' | 'partially_rejected' | 'completed' | 'cancelled';
+  orderVFC?: string; // 6-digit alphanumeric code for online purchases
+  orderCode?: string; // Unique order code
+  pickupAddress?: string; // Vendor address for pickup
+  orderType: 'online' | 'walk_in'; // New field to distinguish order types
 }
 
 const OrderSchema: Schema = new Schema(
@@ -22,9 +25,12 @@ const OrderSchema: Schema = new Schema(
       }
     ],
     totalAmount: { type: Number, default: 0 },
-    paymentMethod: { type: String, enum: ['online', 'pickup'], default: 'online' },
-    status: { type: String, enum: ['placed','pending_pickup','completed','cancelled'], default: 'placed' },
-    verificationCode: { type: String }
+    paymentMethod: { type: String, enum: ['online', 'pickup', 'cash'], default: 'online' },
+    status: { type: String, enum: ['placed', 'pending_pickup', 'pending_verification', 'confirmed', 'partially_rejected', 'completed', 'cancelled'], default: 'placed' },
+    orderVFC: { type: String }, // 6-digit alphanumeric code for online purchases
+    orderCode: { type: String, unique: true }, // Unique order code
+    pickupAddress: { type: String },
+    orderType: { type: String, enum: ['online', 'walk_in'], default: 'online' }
   },
   { timestamps: true }
 );

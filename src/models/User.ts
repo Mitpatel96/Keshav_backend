@@ -17,12 +17,12 @@ const UserSchema: Schema = new Schema(
   {
     permanentId: { type: String, unique: true, required: true },
     name: { type: String, required: true },
-    email: { type: String, unique: true },  // fron frontend side validation will go - required: true
+    email: { type: String, unique: true, default: null },  // fron frontend side validation will go - required: true
     phone: { type: String, required: true },
     temporaryUser: { type: Boolean, default: false },
-    password: { type: String },
-    address: { type: String },
-    dob: { type: Date, required: true },
+    password: { type: String , default: null },
+    address: { type: [String], default: [] }, 
+    dob: { type: Date, required: true , default: null },
     role: { type: String, enum: ['admin', 'vendor', 'user'], default: 'user' },
     active: { type: Boolean, default: true }
   },

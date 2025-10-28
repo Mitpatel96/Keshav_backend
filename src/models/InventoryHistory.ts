@@ -23,7 +23,7 @@ const InventoryHistorySchema: Schema = new Schema(
         quantity: { type: Number, required: true },
         type: {
             type: String,
-            enum: ['transfer_to_vendor', 'deduct_damage', 'deduct_lost', 'vendor_damage', 'vendor_lost'],
+            enum: ['transfer_to_vendor', 'deduct_damage', 'deduct_lost', 'vendor_damage', 'vendor_lost',"deduct_from_order"],
             required: true
         },
         reason: { type: String },

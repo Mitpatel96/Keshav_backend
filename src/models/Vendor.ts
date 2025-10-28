@@ -22,7 +22,7 @@ const VendorSchema: Schema = new Schema(
     name: { type: String, required: true },
     phone: { type: String, required: true },
     email: { type: String, required: true },
-    address: { type: String },  // pickup location, warehouse address
+    address: { type: [String], default: [] },  // pickup location, warehouse address
     documents: [{ type: String }],
     state: { type: String },
     city: { type: String },

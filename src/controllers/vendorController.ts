@@ -4,7 +4,6 @@ import Vendor from '../models/Vendor';
 import User from '../models/User';
 import { generatePermanentId } from '../utils/idGenerator';
 import { sendWelcomeEmail } from '../services/mailService';
-import bcrypt from 'bcryptjs';
 
 export const addVendor = asyncHandler(async (req: Request, res: Response) => {
   const { name, phone, email, address, documents, state, city, area, dob } = req.body;
@@ -90,6 +89,7 @@ export const addVendor = asyncHandler(async (req: Request, res: Response) => {
       name, 
       email, 
       phone,
+      address,
       password: generatedPassword,
       dob: dobDate,
       role: 'vendor', 

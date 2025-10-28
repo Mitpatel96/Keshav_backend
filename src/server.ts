@@ -14,7 +14,6 @@ import damageRoutes from './routes/damageRoutes';
 import paymentRoutes from './routes/paymentRoutes';
 import uploadRoutes from './routes/uploadRoutes';
 
-
 dotenv.config();
 const app = express();
 app.use(express.json());
@@ -44,4 +43,3 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: any) => 
 });
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-
