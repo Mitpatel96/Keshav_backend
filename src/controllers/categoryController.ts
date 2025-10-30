@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
-import Category from '../models/category';
+import Category from '../models/Category';
 
 export const addCategory = asyncHandler(async (req: Request, res: Response): Promise<any> => {
     const { name, description } = req.body;
