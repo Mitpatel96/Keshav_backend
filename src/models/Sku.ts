@@ -22,4 +22,3 @@ const SkuSchema: Schema = new Schema(
 );
 
 export default mongoose.model<ISku>('Sku', SkuSchema);
-

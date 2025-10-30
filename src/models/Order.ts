@@ -17,6 +17,7 @@ const OrderSchema: Schema = new Schema(
   {
     user: { type: Schema.Types.ObjectId, ref: 'User' },
     vendor: { type: Schema.Types.ObjectId, ref: 'Vendor' },
+    product: [{ type: Schema.Types.ObjectId, ref: 'Product' }],
     items: [
       {
         sku: { type: Schema.Types.ObjectId, ref: 'Sku' },

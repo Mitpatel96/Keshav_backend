@@ -34,4 +34,6 @@ const InventorySchema: Schema = new Schema(
   { timestamps: true }
 );
 
+InventorySchema.index({ sku: 1, vendor: 1 });
+
 export default mongoose.model<IInventory>('Inventory', InventorySchema);

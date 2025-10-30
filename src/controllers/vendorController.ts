@@ -6,11 +6,11 @@ import { generatePermanentId } from '../utils/idGenerator';
 import { sendWelcomeEmail } from '../services/mailService';
 
 export const addVendor = asyncHandler(async (req: Request, res: Response) => {
-  const { name, phone, email, address, documents, state, city, area, dob } = req.body;
+  const { name, phone, email, address, documents, state, city, area, dob, location } = req.body;
 
   // Validate required fields
-  if (!name || !phone || !email || !dob) {
-    res.status(400).json({ message: 'Name, phone number, email, and date of birth are required' });
+  if (!name || !phone || !email || !dob || !location) {
+    res.status(400).json({ message: 'Name, phone number, email, date of birth, and location are required' });
     return;
   }
 
@@ -18,6 +18,12 @@ export const addVendor = asyncHandler(async (req: Request, res: Response) => {
   const dobDate = new Date(dob);
   if (isNaN(dobDate.getTime())) {
     res.status(400).json({ message: 'Invalid date of birth format' });
+    return;
+  }
+
+  // Validate location format
+  if (!Array.isArray(location.coordinates) || location.coordinates.length !== 2) {
+    res.status(400).json({ message: 'Invalid location format. Expected { type: "Point", coordinates: [longitude, latitude] }' });
     return;
   }
 
@@ -78,22 +84,24 @@ export const addVendor = asyncHandler(async (req: Request, res: Response) => {
       state,
       city,
       area,
-      dob: dobDate
+      dob: dobDate,
+      location
     };
 
     const vendor = await Vendor.create(vendorData);
-    
+
     // Create vendor user record too
-    const vendorUser = await User.create({ 
-      permanentId, 
-      name, 
-      email, 
+    const vendorUser = await User.create({
+      permanentId,
+      name,
+      email,
       phone,
       address,
       password: generatedPassword,
       dob: dobDate,
-      role: 'vendor', 
-      active: true 
+      role: 'vendor',
+      active: true,
+      location
     });
 
     try {

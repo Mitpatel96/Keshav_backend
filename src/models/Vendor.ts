@@ -13,6 +13,10 @@ export interface IVendor extends Document {
   area?: string;
   dob: Date; // Date of birth - mandatory
   active: boolean;
+  location: {
+    type: string;
+    coordinates: [number, number]; // [longitude, latitude]
+  };
 }
 
 const VendorSchema: Schema = new Schema(
@@ -28,9 +32,23 @@ const VendorSchema: Schema = new Schema(
     city: { type: String },
     area: { type: String },
     dob: { type: Date, required: true }, // Date of birth - mandatory
-    active: { type: Boolean, default: true }
+    active: { type: Boolean, default: true },
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        required: true
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        required: true
+      }
+    }
   },
   { timestamps: true }
 );
+
+// Create a 2dsphere index on the location field
+VendorSchema.index({ location: '2dsphere' });
 
 export default mongoose.model<IVendor>('Vendor', VendorSchema);

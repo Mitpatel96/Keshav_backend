@@ -11,6 +11,10 @@ export interface IUser extends Document {
   role: 'admin' | 'vendor' | 'user';
   active: boolean;
   temporaryUser: boolean; // Add this line
+  location?: {
+    type: string;
+    coordinates: [number, number]; // [longitude, latitude]
+  };
 }
 
 const UserSchema: Schema = new Schema(
@@ -20,13 +24,27 @@ const UserSchema: Schema = new Schema(
     email: { type: String, unique: true, default: null },  // fron frontend side validation will go - required: true
     phone: { type: String, required: true },
     temporaryUser: { type: Boolean, default: false },
-    password: { type: String , default: null },
-    address: { type: [String], default: [] }, 
-    dob: { type: Date, required: true , default: null },
+    password: { type: String, default: null },
+    address: { type: [String], default: [] },
+    dob: { type: Date, required: true, default: null },
     role: { type: String, enum: ['admin', 'vendor', 'user'], default: 'user' },
-    active: { type: Boolean, default: true }
+    active: { type: Boolean, default: true },
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        default: [0, 0]
+      }
+    }
   },
   { timestamps: true }
 );
+
+// Create a 2dsphere index on the location field
+UserSchema.index({ location: '2dsphere' });
 
 export default mongoose.model<IUser>('User', UserSchema);
