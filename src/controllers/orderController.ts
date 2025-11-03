@@ -3,6 +3,7 @@ import asyncHandler from 'express-async-handler';
 import Order from '../models/Order';
 import Inventory from '../models/Inventory';
 import Sku from '../models/Sku';
+import Product from '../models/Product';
 import { generateSixDigitAlphaNumericCode } from '../utils/idGenerator';
 import InventoryHistory from '../models/InventoryHistory';
 import CashAmount from '../models/CashAmount';
@@ -10,16 +11,11 @@ import CashDeductionHistory from '../models/CashDeductionHistory';
 import Vendor from '../models/Vendor';
 import User from '../models/User';
 import { sendMail } from '../services/mailService';
+import { checkProductAvailability } from '../helper/orderHelper';
 
-// 1. User purchases online product
-export const createOnlineOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const { userId, vendorId, items, paymentMethod } = req.body;
-
-  const vendor = await Vendor.findById(vendorId);
-  if (!vendor) {
-    res.status(404).json({ message: 'Vendor not found' });
-    return;
-  }
+// CREATE ORDER FOR COMBO OR SOLO PRODUCT (ONLINE)
+export const createComboProductOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const { userId, productId, vendorId, quantity, paymentMethod } = req.body;
 
   const user = await User.findById(userId);
   if (!user) {
@@ -27,62 +23,173 @@ export const createOnlineOrder = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  let total = 0;
-  const orderItems = [];
-
-  for (const item of items) {
-    const sku = await Sku.findById(item.itemId);
-    if (!sku) {
-      res.status(404).json({ message: `SKU with id ${item.itemId} not found` });
-      return;
-    }
-
-    const price = sku.mrp || 0;
-    const quantity = item.quantity || 0;
-
-    orderItems.push({
-      sku: item.itemId,
-      quantity: quantity,
-      price: price
-    });
-
-    total += price * quantity;
+  const product = await Product.findById(productId).populate('skus.sku');
+  if (!product) {
+    res.status(404).json({ message: 'Product not found' });
+    return;
   }
 
-  const orderVFC = generateSixDigitAlphaNumericCode();
-  const orderCode = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  if (!product.active) {
+    res.status(400).json({ message: 'Product is not active' });
+    return;
+  }
+
+  const vendor = await Vendor.findById(vendorId);
+  if (!vendor) {
+    res.status(404).json({ message: 'Vendor not found' });
+    return;
+  }
+
+  const orderQuantity = quantity || 1;
+  const productSkus = product.skus.map(s => s.sku);
+
+  // Check and reserve inventory for all SKUs atomically
+  const session = await Inventory.startSession();
+  session.startTransaction();
 
   try {
-    const order = await Order.create({
+    let total = 0;
+    const orderItems = [];
+    const reservations = [];
+
+    for (const skuRef of productSkus) {
+      const sku = await Sku.findById(skuRef);
+      if (!sku) {
+        await session.abortTransaction();
+        res.status(404).json({ message: `SKU not found in product` });
+        return;
+      }
+
+      // Find ALL inventory records for this SKU at this vendor
+      const inventories = await Inventory.find({
+        sku: skuRef,
+        vendor: vendorId,
+        status: 'confirmed'
+      }).session(session);
+
+      console.log(`Checking SKU: ${sku.title} (${skuRef})`);
+      console.log(`Vendor: ${vendorId}`);
+      console.log(`Found ${inventories.length} inventory records`);
+
+      if (inventories.length > 0) {
+        inventories.forEach((inv, idx) => {
+          console.log(`  Record ${idx + 1}: qty=${inv.quantity}, reserved=${inv.reservedQuantity || 0}, status=${inv.status}`);
+        });
+      }
+
+      if (!inventories || inventories.length === 0) {
+        // Check if inventory exists without status filter
+        const anyInventory = await Inventory.find({
+          sku: skuRef,
+          vendor: vendorId
+        }).session(session);
+
+        console.log(`Found ${anyInventory.length} inventory records without status filter`);
+        if (anyInventory.length > 0) {
+          anyInventory.forEach((inv, idx) => {
+            console.log(`  Record ${idx + 1}: qty=${inv.quantity}, status=${inv.status}`);
+          });
+        }
+
+        await session.abortTransaction();
+        res.status(400).json({
+          message: `SKU ${sku.title} not available at this vendor`,
+          debug: {
+            skuId: skuRef,
+            vendorId: vendorId,
+            inventoryRecordsFound: anyInventory.length,
+            inventoryStatuses: anyInventory.map(i => i.status)
+          }
+        });
+        return;
+      }
+
+      // Calculate total available quantity across all inventory records
+      const totalAvailableQuantity = inventories.reduce((sum, inv) => {
+        return sum + (inv.quantity - (inv.reservedQuantity || 0));
+      }, 0);
+
+      if (totalAvailableQuantity < orderQuantity) {
+        await session.abortTransaction();
+        res.status(400).json({
+          message: `Insufficient stock for ${sku.title}. Available: ${totalAvailableQuantity}, Requested: ${orderQuantity}`
+        });
+        return;
+      }
+
+      // Reserve the inventory across multiple records if needed
+      let remainingToReserve = orderQuantity;
+      for (const inventory of inventories) {
+        if (remainingToReserve <= 0) break;
+
+        const availableInThisRecord = inventory.quantity - (inventory.reservedQuantity || 0);
+        const toReserveFromThis = Math.min(availableInThisRecord, remainingToReserve);
+
+        if (toReserveFromThis > 0) {
+          inventory.reservedQuantity = (inventory.reservedQuantity || 0) + toReserveFromThis;
+          await inventory.save({ session });
+          remainingToReserve -= toReserveFromThis;
+          reservations.push({ inventory, quantity: toReserveFromThis });
+        }
+      }
+
+      const price = sku.mrp || 0;
+      orderItems.push({
+        sku: skuRef,
+        quantity: orderQuantity,
+        price: price,
+        vendor: vendorId
+      });
+
+      total += price * orderQuantity;
+    }
+
+    const orderVFC = generateSixDigitAlphaNumericCode();
+    const orderCode = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
+    const order = await Order.create([{
       user: userId,
+      product: productId,
       vendor: vendorId,
       items: orderItems,
       totalAmount: total,
-      paymentMethod: 'online',
+      paymentMethod: paymentMethod || 'online',
       status: 'pending_verification',
       orderVFC,
       orderCode,
-      pickupAddress: vendor.address[0],
       orderType: 'online'
-    });
+    }], { session });
+
+    await session.commitTransaction();
 
     try {
       await sendMail({
         to: user.email,
         subject: 'Order Verification Code',
         html: `<p>Your order verification code is: <strong>${orderVFC}</strong></p>
-               <p>Please present this code when picking up your order at the vendor location.</p>`
+               <p>Order Details:</p>
+               <p>Product: ${product.title}</p>
+               <p>Quantity: ${orderQuantity}</p>
+               <p>Total Amount: ₹${total}</p>
+               <p>Please present this code when picking up your order.</p>`
       });
     } catch (error) {
       console.error('Failed to send order verification email:', error);
     }
 
-    res.status(201).json(order);
+    const populatedOrder = await Order.findById(order[0]._id)
+      .populate('user')
+      .populate('product')
+      .populate('vendor')
+      .populate('items.sku');
+
+    res.status(201).json(populatedOrder);
   } catch (error: any) {
+    await session.abortTransaction();
+
     if (error.code === 11000) {
       const duplicateField = Object.keys(error.keyPattern)[0];
       const duplicateValue = error.keyValue[duplicateField];
-
       res.status(400).json({
         message: `Duplicate key error: ${duplicateField} with value '${duplicateValue}' already exists`,
         error: 'DUPLICATE_KEY_ERROR',
@@ -92,23 +199,13 @@ export const createOnlineOrder = asyncHandler(async (req: Request, res: Response
       return;
     }
 
-    if (error.name === 'ValidationError') {
-      res.status(400).json({
-        message: 'Validation error',
-        error: error.message,
-        details: Object.values(error.errors).map((err: any) => ({
-          field: err.path,
-          message: err.message
-        }))
-      });
-      return;
-    }
-
     console.error('Error creating order:', error);
     res.status(500).json({
       message: 'Internal server error while creating order',
       error: error.message
     });
+  } finally {
+    session.endSession();
   }
 });
 
@@ -134,60 +231,142 @@ export const verifyOrderWithVFC = asyncHandler(async (req: Request, res: Respons
   });
 });
 
-// 3. Vendor updates order status (Confirmed, Partially Rejected)
-export const updateOrderStatus = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const { orderId, status, pickupAddress } = req.body;
+// CONFIRM OR REJECT ORDER (VENDOR ACTION)
+export const confirmComboProductOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const { orderId, status } = req.body;
 
-  // Find order
-  const order = await Order.findById(orderId).populate('items.sku');
+  if (!['confirmed', 'partially_rejected'].includes(status)) {
+    res.status(400).json({ message: 'Invalid status. Must be "confirmed" or "partially_rejected"' });
+    return;
+  }
+
+  const order = await Order.findById(orderId)
+    .populate('items.sku')
+    .populate('vendor');
+
   if (!order) {
     res.status(404).json({ message: 'Order not found' });
     return;
   }
 
-  // Update status
-  const previousStatus = order.status;
-  order.status = status;
-
-  // If status is partially rejected and pickup address is provided, update it
-  // if (status === 'partially_rejected' && pickupAddress) {
-  //   order.pickupAddress = pickupAddress;
-  // }
-
-  await order.save();
-
-  // If order status is changed to confirmed, reduce inventory and create history entries
-  if (status === 'confirmed' && previousStatus !== 'confirmed') {
-
-    // Reduce inventory for each item in the order
-    for (const item of order.items) {
-      const inventory = await Inventory.findOne({
-        vendor: order.vendor,
-        sku: item.sku
-      });
-
-      if (inventory) {
-        const oldQuantity = inventory.quantity;
-        inventory.quantity = Math.max(0, inventory.quantity - item.quantity);
-        await inventory.save();
-
-        await InventoryHistory.create({
-          inventory: inventory._id,
-          sku: item.sku,
-          fromVendor: order.vendor,
-          quantity: item.quantity,
-          type: 'deduct_from_order',
-          reason: `Order ${order._id}: Sold ${item.quantity} units`,
-          referenceId: order._id
-        });
-      }
-    }
+  if (order.status === 'confirmed') {
+    res.status(400).json({ message: 'Order already confirmed' });
+    return;
   }
 
-  res.json({
-    message: 'Order status updated successfully',
-    order
-  });
+  if (order.status !== 'pending_verification') {
+    res.status(400).json({ message: 'Order is not pending verification' });
+    return;
+  }
+
+  // Handle partially rejected - admin will handle this case
+  if (status === 'partially_rejected') {
+    // Release all reservations across multiple inventory records
+    for (const item of order.items) {
+      const inventories = await Inventory.find({
+        sku: item.sku,
+        vendor: item.vendor,
+        reservedQuantity: { $gt: 0 }
+      });
+
+      let remainingToRelease = item.quantity;
+      for (const inventory of inventories) {
+        if (remainingToRelease <= 0) break;
+
+        const toReleaseFromThis = Math.min(inventory.reservedQuantity || 0, remainingToRelease);
+        if (toReleaseFromThis > 0) {
+          inventory.reservedQuantity = Math.max(0, (inventory.reservedQuantity || 0) - toReleaseFromThis);
+          await inventory.save();
+          remainingToRelease -= toReleaseFromThis;
+        }
+      }
+    }
+
+    order.status = 'partially_rejected';
+    await order.save();
+
+    res.json({
+      message: 'Order marked as partially rejected. Admin will handle this.',
+      order
+    });
+    return;
+  }
+
+  // Handle confirmed status - deduct from actual inventory
+  const session = await Inventory.startSession();
+  session.startTransaction();
+
+  try {
+    for (const item of order.items) {
+      const inventories = await Inventory.find({
+        sku: item.sku,
+        vendor: item.vendor
+      }).session(session);
+
+      if (!inventories || inventories.length === 0) {
+        await session.abortTransaction();
+        res.status(400).json({ message: `Inventory not found for SKU` });
+        return;
+      }
+
+      // Calculate total available quantity
+      const totalQuantity = inventories.reduce((sum, inv) => sum + inv.quantity, 0);
+
+      if (totalQuantity < item.quantity) {
+        await session.abortTransaction();
+        res.status(400).json({
+          message: `Insufficient inventory for SKU at vendor`
+        });
+        return;
+      }
+
+      // Deduct from actual quantity and release reservation across multiple records
+      let remainingToDeduct = item.quantity;
+      for (const inventory of inventories) {
+        if (remainingToDeduct <= 0) break;
+
+        const toDeductFromThis = Math.min(inventory.quantity, remainingToDeduct);
+        const toReleaseFromThis = Math.min(inventory.reservedQuantity || 0, remainingToDeduct);
+
+        if (toDeductFromThis > 0) {
+          inventory.quantity -= toDeductFromThis;
+          inventory.reservedQuantity = Math.max(0, (inventory.reservedQuantity || 0) - toReleaseFromThis);
+          await inventory.save({ session });
+
+          await InventoryHistory.create([{
+            inventory: inventory._id,
+            sku: item.sku,
+            fromVendor: item.vendor,
+            quantity: toDeductFromThis,
+            type: 'deduct_from_order',
+            reason: `Order ${order._id}: Sold ${toDeductFromThis} units`,
+            referenceId: order._id
+          }], { session });
+
+          remainingToDeduct -= toDeductFromThis;
+        }
+      }
+    }
+
+    order.status = 'confirmed';
+    await order.save({ session });
+
+    await session.commitTransaction();
+
+    res.json({
+      message: 'Order confirmed successfully',
+      order
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+    console.error('Error confirming order:', error);
+    res.status(500).json({
+      message: 'Internal server error while confirming order',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
+  }
 });
 
 // 4.GET PARTIALLY REJECTED ORDERS FOR ADMIN
@@ -252,9 +431,9 @@ export const adminUpdatePickupAddress = asyncHandler(async (req: Request, res: R
   });
 });
 
-// 11. Walk-in user creates temporary user and order
+// WALK-IN ORDER (OFFLINE) - SOLO OR COMBO PRODUCT
 export const createWalkInOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const { name, phone, dob, vendorId, items } = req.body;
+  const { name, phone, dob, vendorId, productId, quantity } = req.body;
 
   // Validate vendor exists
   const vendor = await Vendor.findById(vendorId);
@@ -263,6 +442,70 @@ export const createWalkInOrder = asyncHandler(async (req: Request, res: Response
     return;
   }
 
+  // Validate product exists
+  const product = await Product.findById(productId).populate('skus.sku');
+  if (!product) {
+    res.status(404).json({ message: 'Product not found' });
+    return;
+  }
+
+  if (!product.active) {
+    res.status(400).json({ message: 'Product is not active' });
+    return;
+  }
+
+  const orderQuantity = quantity || 1;
+  const productSkus = product.skus.map(s => s.sku);
+
+  // Check stock availability for all SKUs
+  let total = 0;
+  const orderItems = [];
+
+  for (const skuRef of productSkus) {
+    const sku = await Sku.findById(skuRef);
+    if (!sku) {
+      res.status(404).json({ message: `SKU not found in product` });
+      return;
+    }
+
+    // Check inventory availability across all records (considering reservations)
+    const inventories = await Inventory.find({
+      sku: skuRef,
+      vendor: vendorId,
+      status: 'confirmed'
+    });
+
+    if (!inventories || inventories.length === 0) {
+      res.status(400).json({
+        message: `SKU ${sku.title} not available at this vendor`
+      });
+      return;
+    }
+
+    // Calculate total available quantity across all inventory records
+    const totalAvailableQuantity = inventories.reduce((sum, inv) => {
+      return sum + (inv.quantity - (inv.reservedQuantity || 0));
+    }, 0);
+
+    if (totalAvailableQuantity < orderQuantity) {
+      res.status(400).json({
+        message: `Insufficient stock for ${sku.title}. Available: ${totalAvailableQuantity}, Requested: ${orderQuantity}`
+      });
+      return;
+    }
+
+    const price = sku.mrp || 0;
+    orderItems.push({
+      sku: skuRef,
+      quantity: orderQuantity,
+      price: price,
+      vendor: vendorId
+    });
+
+    total += price * orderQuantity;
+  }
+
+  // Find or create temporary user
   let user = await User.findOne({ phone, temporaryUser: true });
 
   if (!user) {
@@ -279,52 +522,24 @@ export const createWalkInOrder = asyncHandler(async (req: Request, res: Response
     });
   }
 
-  // Calculate total amount by fetching SKU details
-  let total = 0;
-  const orderItems = [];
-
-  for (const item of items) {
-    // Use itemId from the request to find the SKU
-    const sku = await Sku.findById(item.itemId);
-    if (!sku) {
-      res.status(404).json({ message: `SKU with id ${item.itemId} not found` });
-      return;
-    }
-
-    // Use the MRP from SKU as price
-    const price = sku.mrp || 0;
-    const quantity = item.quantity || 0;
-
-    // Add to order items with the correct price
-    orderItems.push({
-      sku: item.itemId,  // Use itemId as the sku reference
-      quantity: quantity,
-      price: price
-    });
-
-    // Calculate total
-    total += price * quantity;
-  }
-
-  const orderCode = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`; // Generate unique order code
+  const orderCode = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
   try {
     const order = await Order.create({
       user: user._id,
       vendor: vendorId,
-      items: orderItems, // Use the processed items with correct prices
+      product: productId,
+      items: orderItems,
       totalAmount: total,
       paymentMethod: 'cash',
-      status: 'confirmed',
-      orderCode, // Add the orderCode field
+      status: 'pending_verification', // Will be confirmed when bill is generated
+      orderCode,
       orderType: 'walk_in'
     });
 
     res.status(201).json({ user, order });
   } catch (error: any) {
-    // Handle MongoDB duplicate key error
     if (error.code === 11000) {
-      // Extract the field that caused the duplicate key error
       const duplicateField = Object.keys(error.keyPattern)[0];
       const duplicateValue = error.keyValue[duplicateField];
 
@@ -337,7 +552,6 @@ export const createWalkInOrder = asyncHandler(async (req: Request, res: Response
       return;
     }
 
-    // Handle other validation errors
     if (error.name === 'ValidationError') {
       res.status(400).json({
         message: 'Validation error',
@@ -350,7 +564,6 @@ export const createWalkInOrder = asyncHandler(async (req: Request, res: Response
       return;
     }
 
-    // Handle other errors
     console.error('Error creating walk-in order:', error);
     res.status(500).json({
       message: 'Internal server error while creating walk-in order',
@@ -358,7 +571,6 @@ export const createWalkInOrder = asyncHandler(async (req: Request, res: Response
     });
   }
 });
-
 
 // 12. GET ORDERS BY VENDOR ID
 export const getOrdersByVendorId = asyncHandler(async (req: Request, res: Response): Promise<void> => {
@@ -388,11 +600,10 @@ export const getOrdersByVendorId = asyncHandler(async (req: Request, res: Respon
   });
 });
 
-// 13. Vendor generates bill for walk-in user
+// GENERATE BILL FOR WALK-IN ORDER (DEDUCT INVENTORY)
 export const generateBill = asyncHandler(async (req: Request, res: Response): Promise<void> => {
   const { orderId, cashAmount } = req.body;
 
-  // Ensure cashAmount is a number
   const cashAmountNum = Number(cashAmount);
   if (isNaN(cashAmountNum)) {
     res.status(400).json({ message: 'Invalid cash amount provided' });
@@ -405,51 +616,111 @@ export const generateBill = asyncHandler(async (req: Request, res: Response): Pr
     return;
   }
 
-  for (const item of order.items) {
-    const inventory = await Inventory.findOne({
-      vendor: order.vendor,
-      sku: item.sku
-    });
+  if (order.orderType !== 'walk_in') {
+    res.status(400).json({ message: 'This API is only for walk-in orders' });
+    return;
+  }
 
-    if (inventory) {
-      const oldQuantity = inventory.quantity;
-      inventory.quantity = Math.max(0, inventory.quantity - item.quantity);
-      await inventory.save();
+  if (order.status === 'confirmed') {
+    res.status(400).json({ message: 'Bill already generated for this order' });
+    return;
+  }
 
-      await InventoryHistory.create({
-        inventory: inventory._id,
-        sku: item.sku,
-        fromVendor: order.vendor,
-        quantity: item.quantity,
-        type: 'deduct_from_order',
-        reason: `Walk-in Order ${order._id}: Sold ${item.quantity} units`,
-        referenceId: order._id
-      });
+  const session = await Inventory.startSession();
+  session.startTransaction();
+
+  try {
+    // Deduct inventory for each item across multiple records
+    for (const item of order.items) {
+      const inventories = await Inventory.find({
+        vendor: order.vendor,
+        sku: item.sku
+      }).session(session);
+
+      if (!inventories || inventories.length === 0) {
+        await session.abortTransaction();
+        res.status(400).json({ message: `Inventory not found for SKU` });
+        return;
+      }
+
+      // Calculate total available quantity
+      const totalAvailableQuantity = inventories.reduce((sum, inv) => {
+        return sum + (inv.quantity - (inv.reservedQuantity || 0));
+      }, 0);
+
+      if (totalAvailableQuantity < item.quantity) {
+        await session.abortTransaction();
+        res.status(400).json({
+          message: `Insufficient inventory for SKU. Available: ${totalAvailableQuantity}`
+        });
+        return;
+      }
+
+      // Deduct from multiple inventory records if needed
+      let remainingToDeduct = item.quantity;
+      for (const inventory of inventories) {
+        if (remainingToDeduct <= 0) break;
+
+        const availableInThisRecord = inventory.quantity - (inventory.reservedQuantity || 0);
+        const toDeductFromThis = Math.min(availableInThisRecord, remainingToDeduct);
+
+        if (toDeductFromThis > 0) {
+          inventory.quantity = Math.max(0, inventory.quantity - toDeductFromThis);
+          await inventory.save({ session });
+
+          await InventoryHistory.create([{
+            inventory: inventory._id,
+            sku: item.sku,
+            fromVendor: order.vendor,
+            quantity: toDeductFromThis,
+            type: 'deduct_from_order',
+            reason: `Walk-in Order ${order._id}: Sold ${toDeductFromThis} units`,
+            referenceId: order._id
+          }], { session });
+
+          remainingToDeduct -= toDeductFromThis;
+        }
+      }
     }
-  }
 
-  let cashEntry = await CashAmount.findOne({ vendorId: (order.vendor as any)._id });
+    // Update cash amount
+    let cashEntry = await CashAmount.findOne({ vendorId: (order.vendor as any)._id }).session(session);
 
-  if (cashEntry) {
-    cashEntry.cashAmount += cashAmountNum;  // Use the numeric value
-    cashEntry.orderId = order._id;
-    cashEntry.billGeneratedAt = new Date();
-    await cashEntry.save();
-  } else {
-    cashEntry = await CashAmount.create({
-      vendorId: (order.vendor as any)._id,
-      cashAmount: cashAmountNum,  // Use the numeric value
-      orderId: order._id
+    if (cashEntry) {
+      cashEntry.cashAmount += cashAmountNum;
+      cashEntry.orderId = order._id;
+      cashEntry.billGeneratedAt = new Date();
+      await cashEntry.save({ session });
+    } else {
+      await CashAmount.create([{
+        vendorId: (order.vendor as any)._id,
+        cashAmount: cashAmountNum,
+        orderId: order._id
+      }], { session });
+      cashEntry = await CashAmount.findOne({ vendorId: (order.vendor as any)._id }).session(session);
+    }
+
+    order.status = 'confirmed';
+    await order.save({ session });
+
+    await session.commitTransaction();
+
+    res.status(201).json({
+      message: 'Bill generated successfully',
+      order,
+      cashEntry
     });
+  } catch (error: any) {
+    await session.abortTransaction();
+    console.error('Error generating bill:', error);
+    res.status(500).json({
+      message: 'Internal server error while generating bill',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
   }
-
-  res.status(201).json({
-    message: 'Bill generated successfully',
-    order,
-    cashEntry
-  });
 });
-
 
 export const getVendorCashBalance = asyncHandler(async (req: Request, res: Response): Promise<void> => {
   const { vendorId } = req.params;
@@ -472,7 +743,6 @@ export const getVendorCashBalance = asyncHandler(async (req: Request, res: Respo
     lastUpdated: cashEntry.billGeneratedAt
   });
 });
-
 
 // Deduct amount when vendor purchases from admin - admin will run this api
 export const deductVendorCash = asyncHandler(async (req: Request, res: Response): Promise<void> => {
@@ -675,4 +945,130 @@ export const getOrdersByUserId = asyncHandler(async (req: Request, res: Response
   });
 });
 
+// CHECK PRODUCT AVAILABILITY AT VENDOR
+export const checkProductStock = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const { productId, vendorId, quantity } = req.body;
 
+  if (!productId || !vendorId) {
+    res.status(400).json({ message: 'productId and vendorId are required' });
+    return;
+  }
+
+  const requestedQuantity = quantity || 1;
+
+  // Get product details
+  const product = await Product.findById(productId).populate('skus.sku');
+  if (!product) {
+    res.status(404).json({ message: 'Product not found' });
+    return;
+  }
+
+  // Check each SKU
+  const skuDetails = [];
+  for (const skuRef of product.skus.map(s => s.sku)) {
+    const sku = await Sku.findById(skuRef);
+    const inventories = await Inventory.find({
+      sku: skuRef,
+      vendor: vendorId
+    });
+
+    const confirmedInventories = inventories.filter(inv => inv.status === 'confirmed');
+    const totalQty = confirmedInventories.reduce((sum, inv) => sum + inv.quantity, 0);
+    const totalReserved = confirmedInventories.reduce((sum, inv) => sum + (inv.reservedQuantity || 0), 0);
+    const available = totalQty - totalReserved;
+
+    skuDetails.push({
+      skuId: skuRef,
+      skuTitle: sku?.title || 'Unknown',
+      totalInventoryRecords: inventories.length,
+      confirmedRecords: confirmedInventories.length,
+      totalQuantity: totalQty,
+      reservedQuantity: totalReserved,
+      availableQuantity: available,
+      inventoryStatuses: inventories.map(inv => ({
+        status: inv.status,
+        quantity: inv.quantity,
+        reserved: inv.reservedQuantity || 0
+      }))
+    });
+  }
+
+  const result = await checkProductAvailability(productId, vendorId, requestedQuantity);
+
+  res.json({
+    ...result,
+    productId,
+    productTitle: product.title,
+    vendorId,
+    requestedQuantity,
+    skuDetails
+  });
+});
+
+// CANCEL ORDER AND RELEASE RESERVATIONS
+export const cancelOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const { orderId } = req.body;
+
+  const order = await Order.findById(orderId);
+  if (!order) {
+    res.status(404).json({ message: 'Order not found' });
+    return;
+  }
+
+  if (order.status === 'confirmed' || order.status === 'completed') {
+    res.status(400).json({ message: 'Cannot cancel confirmed or completed orders' });
+    return;
+  }
+
+  if (order.status === 'cancelled') {
+    res.status(400).json({ message: 'Order already cancelled' });
+    return;
+  }
+
+  const session = await Inventory.startSession();
+  session.startTransaction();
+
+  try {
+    // Release reservations for online orders across multiple inventory records
+    if (order.orderType === 'online' && order.status === 'pending_verification') {
+      for (const item of order.items) {
+        const inventories = await Inventory.find({
+          sku: item.sku,
+          vendor: item.vendor,
+          reservedQuantity: { $gt: 0 }
+        }).session(session);
+
+        let remainingToRelease = item.quantity;
+        for (const inventory of inventories) {
+          if (remainingToRelease <= 0) break;
+
+          const toReleaseFromThis = Math.min(inventory.reservedQuantity || 0, remainingToRelease);
+          if (toReleaseFromThis > 0) {
+            inventory.reservedQuantity = Math.max(0, (inventory.reservedQuantity || 0) - toReleaseFromThis);
+            await inventory.save({ session });
+            remainingToRelease -= toReleaseFromThis;
+          }
+        }
+      }
+    }
+
+    order.status = 'cancelled';
+    await order.save({ session });
+
+    await session.commitTransaction();
+
+    res.json({
+      message: 'Order cancelled successfully',
+      order
+    });
+  } catch (error: any) {
+    await session.abortTransaction();
+    console.error('Error cancelling order:', error);
+    res.status(500).json({
+      message: 'Internal server error while cancelling order',
+      error: error.message
+    });
+  } finally {
+    session.endSession();
+  }
+});

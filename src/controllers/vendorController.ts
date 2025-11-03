@@ -53,21 +53,40 @@ export const addVendor = asyncHandler(async (req: Request, res: Response) => {
   }
 
   try {
-    const lastVendor = await Vendor.findOne({}, { permanentId: 1 }).sort({ permanentId: -1 });
-    let nextNumber = 1001;
+    // Use a more robust approach to generate unique vendor IDs
+    let vendorIdGenerated = false;
+    let permanentId = '';
+    let attempts = 0;
+    const maxAttempts = 10;
 
-    if (lastVendor && lastVendor.permanentId) {
-      const lastNumber = parseInt(lastVendor.permanentId.replace('V', ''));
-      if (!isNaN(lastNumber)) {
-        nextNumber = lastNumber + 1;
+    while (!vendorIdGenerated && attempts < maxAttempts) {
+      attempts++;
+
+      // Get the last vendor to determine the next ID
+      const lastVendor = await Vendor.findOne({}, { permanentId: 1 }).sort({ permanentId: -1 });
+      let nextNumber = 1001;
+
+      if (lastVendor && lastVendor.permanentId) {
+        const lastNumber = parseInt(lastVendor.permanentId.replace('V', ''));
+        if (!isNaN(lastNumber)) {
+          nextNumber = lastNumber + 1;
+        }
+      }
+
+      permanentId = generatePermanentId('V', nextNumber);
+
+      // Try to create the vendor with this ID
+      const existingWithSameId = await Vendor.findOne({ permanentId });
+      if (!existingWithSameId) {
+        vendorIdGenerated = true;
+      } else {
+        // Wait a bit before trying again to reduce collision probability
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
     }
 
-    const permanentId = generatePermanentId('V', nextNumber);
-
-    const existingWithSameId = await Vendor.findOne({ permanentId });
-    if (existingWithSameId) {
-      res.status(500).json({ message: 'Internal server error: duplicate vendor ID generated' });
+    if (!vendorIdGenerated) {
+      res.status(500).json({ message: 'Internal server error: unable to generate unique vendor ID after multiple attempts' });
       return;
     }
 

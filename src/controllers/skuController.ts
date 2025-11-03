@@ -6,11 +6,10 @@ import { kMaxLength } from 'buffer';
 import { kill } from 'process';
 import { ObjectLockLegalHoldStatus } from '@aws-sdk/client-s3';
 
-// Product - sku
 export const addSku = asyncHandler(async (req: Request, res: Response) => {
-  const { title, brand, images, mrp } = req.body;
+  const { title, brand, category, images, mrp } = req.body;
   const skuId = generateSkuId(title);
-  const sku = await Sku.create({ skuId, title, brand, images, mrp });
+  const sku = await Sku.create({ skuId, title, brand, category, images, mrp });
   res.status(201).json(sku);
 });
 
@@ -20,8 +19,8 @@ export const getSkus = asyncHandler(async (req: Request, res: Response) => {
   const skip = (page - 1) * limit;
 
   try {
-    // Get  with pagination
     const skus = await Sku.find()
+      .populate('category', 'name')
       .skip(skip)
       .limit(limit)
       .sort({ createdAt: -1 });

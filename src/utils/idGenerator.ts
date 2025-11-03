@@ -1,5 +1,7 @@
 export const generatePermanentId = (prefix: string, num: number) => {
-  return `${prefix}${(1000 + num).toString().slice(-4)}`;
+  // Ensure proper padding to 4 digits
+  const paddedNum = num.toString().padStart(4, '0');
+  return `${prefix}${paddedNum}`;
 };
 
 export const generateSkuId = (title: string) => {

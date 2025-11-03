@@ -4,6 +4,7 @@ export interface ISku extends Document {
   skuId: string; // auto generated
   title: string;
   brand?: string;
+  category?: Schema.Types.ObjectId;
   images?: string[];
   mrp?: number;
   active: boolean;
@@ -14,6 +15,7 @@ const SkuSchema: Schema = new Schema(
     skuId: { type: String, unique: true, required: true },
     title: { type: String, required: true },
     brand: { type: String },
+    category: { type: Schema.Types.ObjectId, ref: 'Category' },
     images: [{ type: String }],
     mrp: { type: Number },
     active: { type: Boolean, default: true }

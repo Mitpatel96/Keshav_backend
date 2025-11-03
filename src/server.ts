@@ -14,6 +14,8 @@ import damageRoutes from './routes/damageRoutes';
 import paymentRoutes from './routes/paymentRoutes';
 import uploadRoutes from './routes/uploadRoutes';
 import locationRoutes from './routes/locationRoutes';
+import categoryRoutes from './routes/categoryRoutes';
+import productRoutes from './routes/productRoutes';
 
 dotenv.config();
 const app = express();
@@ -36,6 +38,8 @@ app.use('/api/pickups', pickupRoutes);
 app.use('/api/damage', damageRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/location', locationRoutes);
+app.use('/api/categories', categoryRoutes);
+app.use('/api/products', productRoutes);
 
 app.get('/', (_req, res) => res.send('Keshav Admin API running'));
 

@@ -374,7 +374,7 @@ export const approveOrRejectInventory = asyncHandler(async (req: any, res: Respo
   await inv.save();
 
   res.json({
-    message: 'Inventory approved successfully',
+    message: `Inventory ${req?.body?.status} successfully`,
     inventory: inv
   });
 });

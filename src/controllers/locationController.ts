@@ -2,6 +2,10 @@ import { Request, Response } from "express";
 import axios from "axios";
 import Vendor from "../models/Vendor";
 import User from "../models/User";
+import Sku from "../models/Sku";
+import { Types } from "mongoose"
+
+const ObjectId = Types.ObjectId;
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY!;
 
@@ -19,9 +23,18 @@ async function getLatLngFromPincode(pincode: string) {
 // Get nearest vendors
 export const getNearestVendors = async (req: Request, res: Response) => {
     try {
-        const { pincode, lat, lng } = req.body;
+        const { pincode, lat, lng, skuIds } = req.body;
         let userLat: number;
         let userLng: number;
+
+        const skuIdsArray = skuIds.map((skuId: string) => new ObjectId(skuId))
+        const skuDocs = await Sku.find({ _id: { $in: skuIdsArray } });
+        if (!skuDocs.length) throw new Error("Invalid skuIds");
+
+        const skuMap = skuDocs.reduce((acc, sku) => {
+            acc[sku._id.toString()] = sku.title;
+            return acc;
+        }, {} as Record<string, string>);
 
         if (lat && lng) {
             userLat = parseFloat(lat as string);
@@ -35,19 +48,81 @@ export const getNearestVendors = async (req: Request, res: Response) => {
             return res.status(400).json({ error: "pincode or lat/lng required" });
         }
 
-        const vendors = await Vendor.find({
-            active: true,
-            location: {
-                $nearSphere: {
-                    $geometry: { type: "Point", coordinates: [userLng, userLat] },
-                    $maxDistance: 10000 // 10km in meters
-                },
+        const vendors = await Vendor.aggregate([
+            {
+                $geoNear: {
+                    near: { type: "Point", coordinates: [userLng, userLat] },
+                    distanceField: "distance",
+                    maxDistance: 10000,
+                    spherical: true
+                }
             },
-        }).lean();
+            {
+                $match: {
+                    active: true
+                }
+            },
+            {
+                $lookup: {
+                    from: "inventories",
+                    localField: "_id",
+                    foreignField: "vendor",
+                    as: "inventoryDetails",
+                    pipeline: [{
+                        $match: {
+                            sku: { $in: skuIdsArray },
+                            quantity: { $gt: 0 },
+                            status: 'confirmed'
+                        }
+                    }]
+                }
+            }
+        ])
+
+        const processedVendors = vendors.map(vendor => {
+            const stockData = skuIdsArray.map(skuId => {
+                const skuIdStr = skuId.toString();
+                const inventoryItems = vendor.inventoryDetails.filter((item: any) =>
+                    item.sku.toString() === skuIdStr
+                );
+
+                // Calculate available quantity considering reservations
+                const totalQuantity = inventoryItems.reduce((sum: number, item: any) => {
+                    const availableQty = item.quantity - (item.reservedQuantity || 0);
+                    return sum + availableQty;
+                }, 0);
+
+                const isAvailable = totalQuantity > 0;
+
+                return {
+                    skuName: skuMap[skuIdStr] || "Unknown SKU",
+                    quantity: totalQuantity,
+                    available: isAvailable
+                };
+            });
+
+            const isStockAvailable = stockData.every(item => item.available);
+            const { inventoryDetails, distance, ...vendorInfo } = vendor;
+
+            const limitedVendorInfo = {
+                _id: vendorInfo._id,
+                name: vendorInfo.name,
+                phone: vendorInfo.phone,
+                email: vendorInfo.email,
+                address: vendorInfo.address,
+                location: vendorInfo.location
+            };
+
+            return {
+                ...limitedVendorInfo,
+                stockData,
+                isStockAvailable
+            };
+        });
 
         return res.json({
             userLocation: { lat: userLat, lng: userLng },
-            nearest: vendors,
+            nearest: processedVendors,
         });
     } catch (error: any) {
         console.error("Error finding nearest vendors:", error);

@@ -1,12 +1,12 @@
 import express from 'express';
 import { adminOnly, protect } from '../middleware/auth';
-import { adminUpdatePickupAddress, createOnlineOrder, createWalkInOrder, deductVendorCash, generateBill, getOrders, getOrderById, getOrdersByUserId, getOrdersByVendorId, getPartiallyRejectedOrders, getVendorCashBalance, updateOrderStatus, verifyOrderWithVFC, getCashDeductionHistory, getVendorCashDeductionHistory } from '../controllers/orderController';
+import { adminUpdatePickupAddress, createWalkInOrder, deductVendorCash, generateBill, getOrders, getOrderById, getOrdersByUserId, getOrdersByVendorId, getPartiallyRejectedOrders, getVendorCashBalance, verifyOrderWithVFC, getCashDeductionHistory, getVendorCashDeductionHistory, createComboProductOrder, confirmComboProductOrder } from '../controllers/orderController';
 
 const router = express.Router();
 
-router.post('/online-order', createOnlineOrder);
+router.post('/combo-product-order', createComboProductOrder);
 router.post('/verify-order-vfc', verifyOrderWithVFC);
-router.put('/update-order-status', updateOrderStatus);
+router.post('/confirm-combo-order', confirmComboProductOrder);
 router.get('/partially-rejected', protect, adminOnly, getPartiallyRejectedOrders);
 router.put('/admin-update-pickup', adminUpdatePickupAddress);
 

@@ -3,7 +3,13 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IOrder extends Document {
   user: Schema.Types.ObjectId;
   vendor: Schema.Types.ObjectId;
-  items: Array<{ sku: Schema.Types.ObjectId; quantity: number; price: number; }>;
+  product?: Schema.Types.ObjectId;
+  items: Array<{
+    sku: Schema.Types.ObjectId;
+    quantity: number;
+    price: number;
+    vendor?: Schema.Types.ObjectId;
+  }>;
   totalAmount: number;
   paymentMethod: 'online' | 'pickup' | 'cash';
   status: 'placed' | 'pending_pickup' | 'pending_verification' | 'confirmed' | 'partially_rejected' | 'completed' | 'cancelled';
@@ -17,12 +23,13 @@ const OrderSchema: Schema = new Schema(
   {
     user: { type: Schema.Types.ObjectId, ref: 'User' },
     vendor: { type: Schema.Types.ObjectId, ref: 'Vendor' },
-    product: [{ type: Schema.Types.ObjectId, ref: 'Product' }],
+    product: { type: Schema.Types.ObjectId, ref: 'Product' },
     items: [
       {
         sku: { type: Schema.Types.ObjectId, ref: 'Sku' },
         quantity: { type: Number },
-        price: { type: Number }
+        price: { type: Number },
+        vendor: { type: Schema.Types.ObjectId, ref: 'Vendor' }
       }
     ],
     totalAmount: { type: Number, default: 0 },

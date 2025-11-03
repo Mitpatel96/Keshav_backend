@@ -5,6 +5,7 @@ export interface IInventory extends Document {
   vendor: Schema.Types.ObjectId;
   admin: Schema.Types.ObjectId;
   quantity: number;
+  reservedQuantity: number; // Track reserved inventory for pending orders
   price: number;
   status: 'pending' | 'confirmed';
 }
@@ -15,7 +16,8 @@ const InventorySchema: Schema = new Schema(
     vendor: { type: Schema.Types.ObjectId, ref: 'Vendor', default: null },
     admin: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     quantity: { type: Number, default: 0 },
-    price: { type: Number, default: 0 },
+    reservedQuantity: { type: Number, default: 0 }, 
+    // price: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ['pending', 'confirmed', 'rejected'],
