@@ -214,7 +214,7 @@ export const verifyOrderWithVFC = asyncHandler(async (req: Request, res: Respons
   const { orderVFC } = req.body;
 
   const order = await Order.findOne({ orderVFC })
-    .populate('user')
+    .populate('user', '-password')
     .populate('vendor')
     .populate('items.sku')
     .lean();
