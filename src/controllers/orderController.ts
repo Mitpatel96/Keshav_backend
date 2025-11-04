@@ -213,8 +213,12 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
 export const verifyOrderWithVFC = asyncHandler(async (req: Request, res: Response): Promise<void> => {
   const { orderVFC } = req.body;
 
-  // Find order by orderVFC
-  const order = await Order.findOne({ orderVFC }).populate('user').populate('vendor');
+  const order = await Order.findOne({ orderVFC })
+    .populate('user')
+    .populate('vendor')
+    .populate('items.sku')
+    .lean();
+
   if (!order) {
     res.status(404).json({ message: 'Order not found' });
     return;
@@ -225,9 +229,21 @@ export const verifyOrderWithVFC = asyncHandler(async (req: Request, res: Respons
     return;
   }
 
+  const enhancedOrder = {
+    ...order,
+    items: order.items.map((item: any) => ({
+      sku: item.sku._id,
+      skuName: item.sku.title,
+      quantity: item.quantity,
+      price: item.price,
+      vendor: item.vendor,
+      _id: item._id
+    }))
+  };
+
   res.json({
     message: 'Order verified successfully',
-    order
+    order: enhancedOrder
   });
 });
 
