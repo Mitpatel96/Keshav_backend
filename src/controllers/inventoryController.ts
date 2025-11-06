@@ -1,15 +1,16 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import Inventory from '../models/Inventory';
+import PendingInventoryTransfer from '../models/PendingInventoryTransfer';
 import Sku from '../models/Sku';
 import Vendor from '../models/Vendor';
-import User from '../models/User';
 import InventoryHistory from '../models/InventoryHistory';
-import {Types} from "mongoose"
+import { Types } from "mongoose";
+import mongoose from 'mongoose';
 
 const ObjectId = Types.ObjectId;
 
-// ADD INVENTORY - will added by admin only
+// ADD INVENTORY - will be added by admin only
 export const addInventory = asyncHandler(async (req: any, res: Response): Promise<void> => {
   const { skuId, quantity } = req.body;
   const adminUser = req.user;
@@ -25,115 +26,287 @@ export const addInventory = asyncHandler(async (req: any, res: Response): Promis
     return;
   }
 
-  const inv = await Inventory.create({
-    sku: skuId,
-    admin: adminUser._id,
-    quantity,
-    status: 'confirmed'
-  });
+  let inventory = await Inventory.findOne({ sku: skuId, admin: adminUser._id, vendor: null });
 
-  res.status(201).json(inv);
+  if (inventory) {
+    inventory.quantity += quantity;
+    await inventory.save();
+  } else {
+    inventory = await Inventory.create({
+      sku: skuId,
+      admin: adminUser._id,
+      quantity
+    });
+  }
+
+  res.status(201).json(inventory);
 });
 
-// TRANSFER MULTIPLE INVENTORY ITEMS FROM ADMIN TO VENDOR - Updated function
+// TRANSFER INVENTORY FROM ADMIN TO VENDOR
 export const transferInventoryToVendor = asyncHandler(async (req: any, res: Response): Promise<void> => {
-  const { transfers, vendorId } = req.body; // transfers is an array of {inventoryId, quantity}
+  const { transfers, vendorId } = req.body; // transfers is an array of {skuId, quantity}
   const adminUser = req.user;
 
-  // Check if user is admin
   if (adminUser.role !== 'admin') {
     res.status(403).json({ message: 'Access denied. Only admins can transfer inventory.' });
     return;
   }
 
-  // Validate transfers array
   if (!Array.isArray(transfers) || transfers.length === 0) {
     res.status(400).json({ message: 'Transfers array is required and cannot be empty' });
     return;
   }
 
-  // Find the vendor
   const vendor = await Vendor.findOne({ _id: new ObjectId(vendorId), active: true });
   if (!vendor) {
     res.status(404).json({ message: 'Vendor not found' });
     return;
   }
 
-  // Process each transfer
-  const results = [];
-  const historyRecords = [];
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  for (const transfer of transfers) {
-    const { inventoryId, quantity } = transfer;
+  try {
+    const results = [];
+    const historyRecords = [];
+    const pendingTransfers = [];
 
-    // Find the main inventory item (admin inventory)
-    const mainInventory = await Inventory.findById(inventoryId);
-    if (!mainInventory) {
-      results.push({ inventoryId, status: 'error', message: 'Inventory not found' });
-      continue;
-    }
+    for (const transfer of transfers) {
+      const { skuId, quantity } = transfer;
 
-    // Check if this is an admin inventory item
-    if (!mainInventory.admin) {
-      results.push({ inventoryId, status: 'error', message: 'This is not an admin inventory item' });
-      continue;
-    }
+      const adminInventory = await Inventory.findOne({
+        sku: skuId,
+        admin: adminUser._id,
+        vendor: null
+      }).session(session);
 
-    // Check if sufficient quantity is available
-    if (mainInventory.quantity < quantity) {
-      results.push({ inventoryId, status: 'error', message: 'Insufficient quantity in main inventory' });
-      continue;
-    }
+      if (!adminInventory) {
+        results.push({ skuId, status: 'error', message: 'Admin inventory not found for this SKU' });
+        continue;
+      }
 
-    // Deduct quantity from main inventory
-    mainInventory.quantity -= quantity;
-    await mainInventory.save();
+      if (adminInventory.quantity < quantity) {
+        results.push({
+          skuId,
+          status: 'error',
+          message: `Insufficient quantity. Available: ${adminInventory.quantity}, Requested: ${quantity}`
+        });
+        continue;
+      }
 
-    // Create or update vendor inventory
-    let vendorInventory = await Inventory.findOne({ sku: mainInventory.sku, vendor: vendorId });
-    if (vendorInventory) {
-      vendorInventory.quantity += quantity;
-      await vendorInventory.save();
-    } else {
-      vendorInventory = await Inventory.create({
-        sku: mainInventory.sku,
+      adminInventory.quantity -= quantity;
+      await adminInventory.save({ session });
+
+      const pendingTransfer = await PendingInventoryTransfer.create([{
+        sku: skuId,
         vendor: vendorId,
+        admin: adminUser._id,
         quantity,
-        status: 'pending' // Vendor needs to approve
+        status: 'pending'
+      }], { session });
+
+      pendingTransfers.push(pendingTransfer[0]);
+
+      historyRecords.push({
+        inventory: adminInventory._id,
+        sku: skuId,
+        fromAdmin: adminUser._id,
+        toVendor: vendorId,
+        quantity,
+        type: 'transfer_initiated',
+        reason: `Transfer ${quantity} units to vendor ${vendor.name}`,
+        pendingTransferId: pendingTransfer[0]._id
+      });
+
+      results.push({
+        skuId,
+        quantity,
+        status: 'success',
+        message: 'Transfer initiated successfully',
+        pendingTransferId: pendingTransfer[0]._id
       });
     }
 
-    // Add to results
-    results.push({
-      inventoryId,
-      skuId: mainInventory.sku,
-      quantity,
-      mainInventory,
-      vendorInventory,
-      status: 'success'
-    });
+    if (historyRecords.length > 0) {
+      await InventoryHistory.insertMany(historyRecords, { session });
+    }
 
-    // Prepare history record
-    historyRecords.push({
-      inventory: mainInventory._id,
-      sku: mainInventory.sku,
-      fromAdmin: adminUser._id,
-      toVendor: vendorId,
-      quantity,
-      type: 'transfer_to_vendor',
-      reason: `Transfer ${quantity} units to vendor ${vendor.name}`
+    await session.commitTransaction();
+
+    res.status(200).json({
+      message: 'Inventory transfer initiated successfully',
+      results
     });
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+});
+
+// GET PENDING TRANSFERS FOR VENDOR
+export const getPendingTransfers = asyncHandler(async (req: any, res: Response): Promise<void> => {
+  const user = req.user;
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 10;
+  const skip = (page - 1) * limit;
+
+  if (user.role !== 'vendor') {
+    res.status(403).json({ message: 'Access denied. Only vendors can view pending transfers.' });
+    return;
   }
 
-  // Create all inventory history records
-  if (historyRecords.length > 0) {
-    await InventoryHistory.insertMany(historyRecords);
+  const vendorDoc = await Vendor.findOne({ permanentId: user.permanentId });
+  if (!vendorDoc) {
+    res.status(404).json({ message: 'Vendor record not found' });
+    return;
   }
 
-  res.status(200).json({
-    message: 'Inventory transfer completed',
-    results
+  const [transfers, totalCount] = await Promise.all([
+    PendingInventoryTransfer.find({ vendor: vendorDoc._id })
+      .populate('sku', 'skuId title brand images mrp')
+      .populate('admin', 'name email')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit),
+    PendingInventoryTransfer.countDocuments({ vendor: vendorDoc._id })
+  ]);
+
+  res.json({
+    data: transfers,
+    pagination: {
+      currentPage: page,
+      totalPages: Math.ceil(totalCount / limit),
+      totalCount,
+      hasNextPage: page < Math.ceil(totalCount / limit),
+      hasPrevPage: page > 1
+    }
   });
+});
+
+// VENDOR ACCEPT OR REJECT PENDING TRANSFER
+export const respondToPendingTransfer = asyncHandler(async (req: any, res: Response): Promise<void> => {
+  const { transferId } = req.params;
+  const { action, rejectionReason } = req.body; // action: 'accept' or 'reject'
+  const user = req.user;
+
+  if (user.role !== 'vendor') {
+    res.status(403).json({ message: 'Access denied. Only vendors can respond to transfers.' });
+    return;
+  }
+
+  const vendorDoc = await Vendor.findOne({ permanentId: user.permanentId });
+  if (!vendorDoc) {
+    res.status(404).json({ message: 'Vendor record not found' });
+    return;
+  }
+
+  const pendingTransfer = await PendingInventoryTransfer.findById(transferId);
+  if (!pendingTransfer) {
+    res.status(404).json({ message: 'Pending transfer not found' });
+    return;
+  }
+
+  if (pendingTransfer.vendor.toString() !== vendorDoc._id.toString()) {
+    res.status(403).json({ message: 'Access denied to this transfer' });
+    return;
+  }
+
+  if (pendingTransfer.status !== 'pending') {
+    res.status(400).json({ message: `Transfer already ${pendingTransfer.status}` });
+    return;
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    if (action === 'accept') {
+      let vendorInventory = await Inventory.findOne({
+        sku: pendingTransfer.sku,
+        vendor: vendorDoc._id
+      }).session(session);
+
+      if (vendorInventory) {
+        vendorInventory.quantity += pendingTransfer.quantity;
+        await vendorInventory.save({ session });
+      } else {
+        const newInventory = await Inventory.create([{
+          sku: pendingTransfer.sku,
+          vendor: vendorDoc._id,
+          quantity: pendingTransfer.quantity
+        }], { session });
+        vendorInventory = newInventory[0];
+      }
+
+      pendingTransfer.status = 'accepted';
+      pendingTransfer.respondedAt = new Date();
+      await pendingTransfer.save({ session });
+
+      await InventoryHistory.create([{
+        inventory: vendorInventory._id,
+        sku: pendingTransfer.sku,
+        fromAdmin: pendingTransfer.admin,
+        toVendor: vendorDoc._id,
+        quantity: pendingTransfer.quantity,
+        type: 'transfer_accepted',
+        reason: `Vendor accepted transfer of ${pendingTransfer.quantity} units`,
+        pendingTransferId: pendingTransfer._id
+      }], { session });
+
+      await session.commitTransaction();
+
+      res.json({
+        message: 'Transfer accepted successfully',
+        pendingTransfer,
+        vendorInventory
+      });
+    } else if (action === 'reject') {
+      const adminInventory = await Inventory.findOne({
+        sku: pendingTransfer.sku,
+        admin: pendingTransfer.admin,
+        vendor: null
+      }).session(session);
+
+      if (adminInventory) {
+        adminInventory.quantity += pendingTransfer.quantity;
+        await adminInventory.save({ session });
+      }
+
+      pendingTransfer.status = 'rejected';
+      pendingTransfer.rejectionReason = rejectionReason || 'No reason provided';
+      pendingTransfer.respondedAt = new Date();
+      await pendingTransfer.save({ session });
+
+      await InventoryHistory.create([{
+        inventory: adminInventory?._id,
+        sku: pendingTransfer.sku,
+        fromAdmin: pendingTransfer.admin,
+        toVendor: vendorDoc._id,
+        quantity: pendingTransfer.quantity,
+        type: 'transfer_rejected',
+        reason: `Vendor rejected transfer: ${pendingTransfer.rejectionReason}`,
+        pendingTransferId: pendingTransfer._id
+      }], { session });
+
+      await session.commitTransaction();
+
+      res.json({
+        message: 'Transfer rejected successfully. Quantity returned to admin inventory.',
+        pendingTransfer
+      });
+    } else {
+      await session.abortTransaction();
+      res.status(400).json({ message: 'Invalid action. Use "accept" or "reject"' });
+      return;
+    }
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
 });
 
 // GET ALL INVENTORY - vendor wise and admin ko saari inventory
@@ -144,89 +317,25 @@ export const getInventory = asyncHandler(async (req: any, res: Response): Promis
 
   const user = req.user;
 
-  let pipeline;
   if (user.role === 'admin') {
-    pipeline = [
-      { $match: { admin: user._id, vendorId: null } },
-      {
-        $lookup: {
-          from: 'skus', localField: 'sku', foreignField: '_id', as: 'sku',
-          pipeline: [{ $project: { skuId: 1, title: 1, brand: 1, images: 1, mrp: 1 } }]
-        }
-      },
-      {
-        $lookup: {
-          from: 'vendors', localField: 'vendor', foreignField: '_id', as: 'vendor',
-          pipeline: [{ $project: { name: 1 } }]
-        }
-      },
-      {
-        $lookup: {
-          from: 'users', localField: 'admin', foreignField: '_id', as: 'admin',
-          pipeline: [{ $project: { name: 1 } }]
-        }
-      },
-      {
-        $addFields: {
-          sku: { $arrayElemAt: ['$sku', 0] },
-          vendor: {
-            $cond: [
-              { $eq: [{ $size: '$vendor' }, 0] },
-              null,
-              { $arrayElemAt: ['$vendor', 0] }
-            ]
-          },
-          admin: {
-            $cond: [
-              { $eq: [{ $size: '$admin' }, 0] },
-              null,
-              { $arrayElemAt: ['$admin', 0] }
-            ]
-          }
-        }
+    const [list, totalCount] = await Promise.all([
+      Inventory.find({ admin: user._id, vendor: null })
+        .populate('sku', 'skuId title brand images mrp')
+        .skip(skip)
+        .limit(limit),
+      Inventory.countDocuments({ admin: user._id, vendor: null })
+    ]);
+
+    res.json({
+      data: list,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalCount,
+        hasNextPage: page < Math.ceil(totalCount / limit),
+        hasPrevPage: page > 1
       }
-    ];
-
-    try {
-      const paginatedPipeline = [...pipeline];
-      paginatedPipeline.push({ $skip: skip });
-      paginatedPipeline.push({ $limit: limit });
-
-      const [list, totalCount] = await Promise.all([
-        Inventory.aggregate(paginatedPipeline),
-        Inventory.countDocuments({ admin: user._id }) // Count only admin's inventory
-      ]);
-
-      res.json({
-        data: list,
-        pagination: {
-          currentPage: page,
-          totalPages: Math.ceil(totalCount / limit),
-          totalCount,
-          hasNextPage: page < Math.ceil(totalCount / limit),
-          hasPrevPage: page > 1
-        }
-      });
-    } catch (err) {
-      console.error('Aggregation error:', err);
-      const [list, totalCount] = await Promise.all([
-        Inventory.find({ admin: user._id }).populate('sku').populate('vendor').populate('admin')
-          .skip(skip)
-          .limit(limit),
-        Inventory.countDocuments({ admin: user._id }) // Count only admin's inventory
-      ]);
-
-      res.json({
-        data: list,
-        pagination: {
-          currentPage: page,
-          totalPages: Math.ceil(totalCount / limit),
-          totalCount,
-          hasNextPage: page < Math.ceil(totalCount / limit),
-          hasPrevPage: page > 1
-        }
-      });
-    }
+    });
   } else if (user.role === 'vendor') {
     const vendorDoc = await Vendor.findOne({ permanentId: user.permanentId });
     if (!vendorDoc) {
@@ -234,74 +343,24 @@ export const getInventory = asyncHandler(async (req: any, res: Response): Promis
       return;
     }
 
-    pipeline = [
-      { $match: { vendor: vendorDoc._id } },
-      {
-        $lookup: {
-          from: 'skus', localField: 'sku', foreignField: '_id', as: 'sku',
-          pipeline: [{ $project: { skuId: 1, title: 1, brand: 1, images: 1, mrp: 1 } }]
-        }
-      },
-      {
-        $lookup: {
-          from: 'vendors', localField: 'vendor', foreignField: '_id', as: 'vendor',
-          pipeline: [{ $project: { name: 1 } }]
-        }
-      },
-      {
-        $addFields: {
-          sku: { $arrayElemAt: ['$sku', 0] },
-          vendor: {
-            $cond: [
-              { $eq: [{ $size: '$vendor' }, 0] },
-              null,
-              { $arrayElemAt: ['$vendor', 0] }
-            ]
-          }
-        }
+    const [list, totalCount] = await Promise.all([
+      Inventory.find({ vendor: vendorDoc._id })
+        .populate('sku', 'skuId title brand images mrp')
+        .skip(skip)
+        .limit(limit),
+      Inventory.countDocuments({ vendor: vendorDoc._id })
+    ]);
+
+    res.json({
+      data: list,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalCount,
+        hasNextPage: page < Math.ceil(totalCount / limit),
+        hasPrevPage: page > 1
       }
-    ];
-
-    try {
-      const paginatedPipeline = [...pipeline];
-      paginatedPipeline.push({ $skip: skip });
-      paginatedPipeline.push({ $limit: limit });
-
-      const [list, totalCount] = await Promise.all([
-        Inventory.aggregate(paginatedPipeline),
-        Inventory.countDocuments({ vendor: vendorDoc._id })
-      ]);
-
-      res.json({
-        data: list,
-        pagination: {
-          currentPage: page,
-          totalPages: Math.ceil(totalCount / limit),
-          totalCount,
-          hasNextPage: page < Math.ceil(totalCount / limit),
-          hasPrevPage: page > 1
-        }
-      });
-    } catch (err) {
-      console.error('Aggregation error:', err);
-      const [list, totalCount] = await Promise.all([
-        Inventory.find({ vendor: vendorDoc._id }).populate('sku').populate('vendor')
-          .skip(skip)
-          .limit(limit),
-        Inventory.countDocuments({ vendor: vendorDoc._id })
-      ]);
-
-      res.json({
-        data: list,
-        pagination: {
-          currentPage: page,
-          totalPages: Math.ceil(totalCount / limit),
-          totalCount,
-          hasNextPage: page < Math.ceil(totalCount / limit),
-          hasPrevPage: page > 1
-        }
-      });
-    }
+    });
   } else {
     res.status(403).json({ message: 'Access denied' });
     return;
@@ -336,45 +395,4 @@ export const updateInventoryQty = asyncHandler(async (req: Request, res: Respons
   await inv.save();
 
   res.json(inv);
-});
-
-// VENDOR APPROVE INVENTORY - vendor can approve their pending inventory
-export const approveOrRejectInventory = asyncHandler(async (req: any, res: Response): Promise<void> => {
-  const inv = await Inventory.findById(req.params.id);
-  if (!inv) {
-    res.status(404).json({ message: 'Inventory not found' });
-    return;
-  }
-
-  const user = req.user;
-
-  if (user.role !== 'vendor') {
-    res.status(403).json({ message: 'Access denied. Only vendors can approve inventory.' });
-    return;
-  }
-
-  // Find the vendor document associated with this user
-  const vendorDoc = await Vendor.findOne({ permanentId: user.permanentId });
-  if (!vendorDoc) {
-    res.status(404).json({ message: 'Vendor record not found' });
-    return;
-  }
-
-  if (inv.vendor?.toString() !== vendorDoc._id.toString()) {
-    res.status(403).json({ message: 'Access denied to this inventory item' });
-    return;
-  }
-
-  if (inv.status !== 'pending') {
-    res.status(400).json({ message: 'Only pending inventory can be approved' });
-    return;
-  }
-
-  inv.status = req?.body?.status || 'confirmed';
-  await inv.save();
-
-  res.json({
-    message: `Inventory ${req?.body?.status} successfully`,
-    inventory: inv
-  });
 });
