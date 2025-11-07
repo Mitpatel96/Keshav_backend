@@ -1,9 +1,9 @@
-name: Deploy to AWS Lightsail
+name: Deploy to GCP VM
 
 on:
   push:
     branches:
-      - main  # Trigger deployment when main branch is updated
+      - main  # Trigger deployment on pushes to main branch
 
 jobs:
   deploy:
@@ -18,9 +18,9 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.AUTHRUST_DEV }}
 
-      - name: Deploy to AWS Lightsail
+      - name: Deploy to GCP VM (apps-api)
         run: |
-          ssh -o StrictHostKeyChecking=no bitnami@65.2.9.83 "
+          ssh -o StrictHostKeyChecking=no authrusttechnologies@34.134.37.211 "
             cd /home/Keshav_backend && \
             git fetch origin main && \
             git reset --hard origin/main && \
