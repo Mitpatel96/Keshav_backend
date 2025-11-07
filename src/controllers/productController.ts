@@ -5,7 +5,7 @@ import Sku from '../models/Sku';
 
 // if isCombo : false then - price should come sku'sId mrp  otherwise there should be a text field
 export const createProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const { title, description, isCombo, skus, price } = req.body;
+    const { title, description, isCombo, skus, price, images } = req.body;
 
     for (const item of skus) {
         const sku = await Sku.findById(item.sku);
@@ -20,7 +20,8 @@ export const createProduct = asyncHandler(async (req: Request, res: Response): P
         description,
         isCombo,
         skus,
-        price
+        price,
+        images
     });
 
     const populatedProduct = await Product.findById(product._id)
@@ -87,7 +88,7 @@ export const getProductById = asyncHandler(async (req: Request, res: Response): 
 });
 
 export const updateProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const { title, description, isCombo, skus, price, active } = req.body;
+    const { title, description, isCombo, skus, price, active, images } = req.body;
 
     const product = await Product.findById(req.params.id);
     if (!product) {
@@ -110,6 +111,7 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response): P
     product.isCombo = isCombo ?? product.isCombo;
     product.skus = skus ?? product.skus;
     product.price = price ?? product.price;
+    product.images = images ?? product.images;
     product.active = active ?? product.active;
 
     await product.save();

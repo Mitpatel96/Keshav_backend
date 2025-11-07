@@ -63,8 +63,7 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
       // Find ALL inventory records for this SKU at this vendor
       const inventories = await Inventory.find({
         sku: skuRef,
-        vendor: vendorId,
-        status: 'confirmed'
+        vendor: vendorId
       }).session(session);
 
       console.log(`Checking SKU: ${sku.title} (${skuRef})`);
@@ -73,33 +72,14 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
 
       if (inventories.length > 0) {
         inventories.forEach((inv, idx) => {
-          console.log(`  Record ${idx + 1}: qty=${inv.quantity}, reserved=${inv.reservedQuantity || 0}, status=${inv.status}`);
+          console.log(`  Record ${idx + 1}: qty=${inv.quantity}, reserved=${inv.reservedQuantity || 0}`);
         });
       }
 
       if (!inventories || inventories.length === 0) {
-        // Check if inventory exists without status filter
-        const anyInventory = await Inventory.find({
-          sku: skuRef,
-          vendor: vendorId
-        }).session(session);
-
-        console.log(`Found ${anyInventory.length} inventory records without status filter`);
-        if (anyInventory.length > 0) {
-          anyInventory.forEach((inv, idx) => {
-            console.log(`  Record ${idx + 1}: qty=${inv.quantity}, status=${inv.status}`);
-          });
-        }
-
         await session.abortTransaction();
         res.status(400).json({
-          message: `SKU ${sku.title} not available at this vendor`,
-          debug: {
-            skuId: skuRef,
-            vendorId: vendorId,
-            inventoryRecordsFound: anyInventory.length,
-            inventoryStatuses: anyInventory.map(i => i.status)
-          }
+          message: `SKU ${sku.title} not available at this vendor`
         });
         return;
       }
@@ -487,8 +467,7 @@ export const createWalkInOrder = asyncHandler(async (req: Request, res: Response
     // Check inventory availability across all records (considering reservations)
     const inventories = await Inventory.find({
       sku: skuRef,
-      vendor: vendorId,
-      status: 'confirmed'
+      vendor: vendorId
     });
 
     if (!inventories || inventories.length === 0) {
@@ -988,21 +967,18 @@ export const checkProductStock = asyncHandler(async (req: Request, res: Response
       vendor: vendorId
     });
 
-    const confirmedInventories = inventories.filter(inv => inv.status === 'confirmed');
-    const totalQty = confirmedInventories.reduce((sum, inv) => sum + inv.quantity, 0);
-    const totalReserved = confirmedInventories.reduce((sum, inv) => sum + (inv.reservedQuantity || 0), 0);
+    const totalQty = inventories.reduce((sum, inv) => sum + inv.quantity, 0);
+    const totalReserved = inventories.reduce((sum, inv) => sum + (inv.reservedQuantity || 0), 0);
     const available = totalQty - totalReserved;
 
     skuDetails.push({
       skuId: skuRef,
       skuTitle: sku?.title || 'Unknown',
       totalInventoryRecords: inventories.length,
-      confirmedRecords: confirmedInventories.length,
       totalQuantity: totalQty,
       reservedQuantity: totalReserved,
       availableQuantity: available,
-      inventoryStatuses: inventories.map(inv => ({
-        status: inv.status,
+      inventoryDetails: inventories.map(inv => ({
         quantity: inv.quantity,
         reserved: inv.reservedQuantity || 0
       }))
