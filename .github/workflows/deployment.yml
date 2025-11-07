@@ -1,0 +1,29 @@
+name: Deploy to AWS Lightsail
+
+on:
+  push:
+    branches:
+      - main  # Trigger deployment when main branch is updated
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.AUTHRUST_DEV }}
+
+      - name: Deploy to AWS Lightsail
+        run: |
+          ssh -o StrictHostKeyChecking=no bitnami@65.2.9.83 "
+            cd /home/Keshav_backend && \
+            git fetch origin main && \
+            git reset --hard origin/main && \
+            npm ci --production && \
+            pm2 restart keshav-backend || pm2 start npm --name keshav-backend -- run server
+          "

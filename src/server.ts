@@ -40,6 +40,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/location', locationRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
+app.use('api/health', (_req, res) => res.send('OK'));
 
 app.get('/', (_req, res) => res.send('Keshav Admin API running'));
 
