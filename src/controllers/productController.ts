@@ -5,7 +5,7 @@ import Sku from '../models/Sku';
 
 // if isCombo : false then - price should come sku'sId mrp  otherwise there should be a text field
 export const createProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const { title, description, isCombo, skus, price, images } = req.body;
+    const { title, description, isCombo, skus, price, images, strikeThroughPrice } = req.body;
 
     for (const item of skus) {
         const sku = await Sku.findById(item.sku);
@@ -21,7 +21,8 @@ export const createProduct = asyncHandler(async (req: Request, res: Response): P
         isCombo,
         skus,
         price,
-        images
+        images,
+        strikeThroughPrice
     });
 
     const populatedProduct = await Product.findById(product._id)
@@ -88,9 +89,9 @@ export const getProductById = asyncHandler(async (req: Request, res: Response): 
 });
 
 export const updateProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const { title, description, isCombo, skus, price, active, images } = req.body;
+    const { title, description, isCombo, skus, price, active, images, strikeThroughPrice } = req.body;
 
-    const product = await Product.findById(req.params.id);
+    const product: any = await Product.findById(req.params.id);
     if (!product) {
         res.status(404).json({ message: 'Product not found' });
         return;
@@ -113,6 +114,7 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response): P
     product.price = price ?? product.price;
     product.images = images ?? product.images;
     product.active = active ?? product.active;
+    product.strikeThroughPrice = strikeThroughPrice ?? product.strikeThroughPrice;
 
     await product.save();
 

@@ -22,6 +22,7 @@ const ProductSchema: Schema = new Schema(
         quantity: { type: Number, default: 1 },
         skus: [{ sku: { type: Schema.Types.ObjectId, ref: 'Sku', required: true }, }],
         price: { type: Number, required: true },
+        strikeThroughPrice: { type: Number, required: false, default: 0 },
         active: { type: Boolean, default: true }
     },
     { timestamps: true }
