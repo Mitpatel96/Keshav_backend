@@ -18,6 +18,7 @@ import categoryRoutes from './routes/categoryRoutes';
 import productRoutes from './routes/productRoutes';
 import traderRoutes from './routes/user/traderRoutes';
 import websiteSectionRoutes from './routes/user/websiteSectionRoutes';
+import userSideRoutes from './routes/user/userSideRoutes';
 
 dotenv.config();
 const app = express();
@@ -42,9 +43,10 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/location', locationRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/products', productRoutes);
-app.use('api/health', (_req, res) => res.send('OK'));
+app.use('/api/user-side', userSideRoutes);
 app.use('/api/traders', traderRoutes);
 app.use('/api/website-sections', websiteSectionRoutes);
+app.use('api/health', (_req, res) => res.send('OK'));
 
 app.get('/', (_req, res) => res.send('Keshav Admin API running'));
 
