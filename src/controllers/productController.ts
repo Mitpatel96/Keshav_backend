@@ -2,10 +2,22 @@ import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import Product from '../models/Product';
 import Sku from '../models/Sku';
+import Category from '../models/Category';
 
 // if isCombo : false then - price should come sku'sId mrp  otherwise there should be a text field
 export const createProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const { title, description, isCombo, skus, price, images, strikeThroughPrice } = req.body;
+    const { title, description, isCombo, category, skus, price, images, strikeThroughPrice } = req.body;
+
+    if (!category) {
+        res.status(400).json({ message: 'Category is required' });
+        return;
+    }
+
+    const categoryExists = await Category.findById(category);
+    if (!categoryExists) {
+        res.status(404).json({ message: 'Category not found' });
+        return;
+    }
 
     for (const item of skus) {
         const sku = await Sku.findById(item.sku);
@@ -19,6 +31,7 @@ export const createProduct = asyncHandler(async (req: Request, res: Response): P
         title,
         description,
         isCombo,
+        category,
         skus,
         price,
         images,
@@ -26,6 +39,7 @@ export const createProduct = asyncHandler(async (req: Request, res: Response): P
     });
 
     const populatedProduct = await Product.findById(product._id)
+        .populate('category', 'name')
         .populate({
             path: 'skus.sku',
             populate: { path: 'category', select: 'name' }
@@ -39,14 +53,19 @@ export const getProducts = asyncHandler(async (req: Request, res: Response): Pro
     const limit = parseInt(req.query.limit as string) || 10;
     const skip = (page - 1) * limit;
     const isCombo = req.query.isCombo;
+    const category = req.query.category as string;
 
     try {
         const filter: any = {};
         if (isCombo !== undefined) {
             filter.isCombo = isCombo === 'true';
         }
+        if (category) {
+            filter.category = category;
+        }
 
         const products = await Product.find(filter)
+            .populate('category', 'name')
             .populate({
                 path: 'skus.sku',
                 populate: { path: 'category', select: 'name' }
@@ -75,6 +94,7 @@ export const getProducts = asyncHandler(async (req: Request, res: Response): Pro
 
 export const getProductById = asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const product = await Product.findById(req.params.id)
+        .populate('category', 'name')
         .populate({
             path: 'skus.sku',
             populate: { path: 'category', select: 'name' }
@@ -89,12 +109,20 @@ export const getProductById = asyncHandler(async (req: Request, res: Response): 
 });
 
 export const updateProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const { title, description, isCombo, skus, price, active, images, strikeThroughPrice } = req.body;
+    const { title, description, isCombo, category, skus, price, active, images, strikeThroughPrice } = req.body;
 
     const product: any = await Product.findById(req.params.id);
     if (!product) {
         res.status(404).json({ message: 'Product not found' });
         return;
+    }
+
+    if (category) {
+        const categoryExists = await Category.findById(category);
+        if (!categoryExists) {
+            res.status(404).json({ message: 'Category not found' });
+            return;
+        }
     }
 
     if (skus) {
@@ -110,6 +138,7 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response): P
     product.title = title ?? product.title;
     product.description = description ?? product.description;
     product.isCombo = isCombo ?? product.isCombo;
+    product.category = category ?? product.category;
     product.skus = skus ?? product.skus;
     product.price = price ?? product.price;
     product.images = images ?? product.images;
@@ -119,6 +148,7 @@ export const updateProduct = asyncHandler(async (req: Request, res: Response): P
     await product.save();
 
     const updatedProduct = await Product.findById(product._id)
+        .populate('category', 'name')
         .populate({
             path: 'skus.sku',
             populate: { path: 'category', select: 'name' }

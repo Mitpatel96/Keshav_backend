@@ -35,7 +35,7 @@ export const createWebsiteSection = asyncHandler(async (req: Request, res: Respo
 
     if (sectionType === 'PRODUCT_DETAIL') {
         if (!product || !trader) {
-            res.status(400).json({ message: 'Product or Trader is required for PRODUCT_DETAIL section' });
+            res.status(400).json({ message: 'Product, Trader is required for PRODUCT_DETAIL section' });
             return;
         }
         const productExists = await Product.findById(product);
@@ -99,7 +99,7 @@ export const createWebsiteSection = asyncHandler(async (req: Request, res: Respo
 
     const populatedSection = await WebsiteSection.findById(section._id)
         .populate('trader', 'name phone email')
-        .populate('product', 'title price images')
+        .populate('product', 'title price images strikeThroughPrice description')
         .populate('categoryId', 'name');
 
     res.status(201).json(populatedSection);
@@ -125,7 +125,7 @@ export const getWebsiteSections = asyncHandler(async (req: Request, res: Respons
 
     const sections = await WebsiteSection.find(filter)
         .populate('trader', 'name phone email')
-        .populate('product', 'title price images')
+        .populate('product', 'title price images strikeThroughPrice description')
         .populate('categoryId', 'name')
         .skip(skip)
         .limit(limit)
