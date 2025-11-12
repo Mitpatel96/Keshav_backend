@@ -30,7 +30,8 @@
         "nodemailer": "^7.0.9",
         "sharp": "^0.34.4",
         "stripe": "^19.1.0",
-        "tsc-watch": "^7.2.0"
+        "tsc-watch": "^7.2.0",
+        "xlsx": "^0.18.5"
     },
     "devDependencies": {
         "@types/bcryptjs": "^2.4.6",
