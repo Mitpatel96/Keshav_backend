@@ -1,7 +1,5 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
-import Product from '../../models/Product';
-import Category from '../../models/Category';
 import WebsiteSection from '../../models/user/WebsiteSection';
 import { Types } from 'mongoose';
 
