@@ -6,7 +6,6 @@ export interface IProduct extends Document {
     images: string[];
     isCombo: boolean;
     quantity: number;
-    category: Schema.Types.ObjectId;
     skus: Array<{
         sku: Schema.Types.ObjectId;
     }>;
@@ -22,7 +21,6 @@ const ProductSchema: Schema = new Schema(
         images: [{ type: String }],
         isCombo: { type: Boolean, default: false },
         quantity: { type: Number, default: 1 },
-        category: { type: Schema.Types.ObjectId, ref: 'Category', required: true },
         skus: [{ sku: { type: Schema.Types.ObjectId, ref: 'Sku', required: true }, }],
         price: { type: Number, required: true },
         strikeThroughPrice: { type: Number, required: false, default: 0 },
@@ -30,8 +28,5 @@ const ProductSchema: Schema = new Schema(
     },
     { timestamps: true }
 );
-
-// Index for better query performance
-ProductSchema.index({ category: 1, active: 1 });
 
 export default mongoose.model<IProduct>('Product', ProductSchema);
