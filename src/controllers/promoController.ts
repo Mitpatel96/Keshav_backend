@@ -222,6 +222,7 @@ export const listPromoBatches = asyncHandler(async (req: Request, res: Response)
 
   const [items, total] = await Promise.all([
     PromoBatch.find(filter)
+      .populate('products', 'title')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -312,7 +313,13 @@ export const listPromoBatches = asyncHandler(async (req: Request, res: Response)
       stats: {
         ...stat,
         remainingUsage: Math.max(0, stat.totalUsageLimit - stat.totalUsageCount)
-      }
+      },
+      products: Array.isArray(item.products)
+        ? item.products.map((product: any) => ({
+            _id: product?._id?.toString?.() || product?._id || product,
+            title: product?.title || ''
+          }))
+        : []
     };
   });
 
