@@ -316,9 +316,9 @@ export const listPromoBatches = asyncHandler(async (req: Request, res: Response)
       },
       products: Array.isArray(item.products)
         ? item.products.map((product: any) => ({
-            _id: product?._id?.toString?.() || product?._id || product,
-            title: product?.title || ''
-          }))
+          _id: product?._id?.toString?.() || product?._id || product,
+          title: product?.title || ''
+        }))
         : []
     };
   });
@@ -529,6 +529,7 @@ export const redeemPromoCode = asyncHandler(
   }
 );
 
+// not using
 export const exportPromoBatch = asyncHandler(async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params;
   if (!Types.ObjectId.isValid(id)) {

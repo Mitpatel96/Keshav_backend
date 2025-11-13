@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import asyncHandler from 'express-async-handler';
 import Order from '../models/Order';
+import { Types } from 'mongoose';
 import Inventory from '../models/Inventory';
 import Sku from '../models/Sku';
 import Product from '../models/Product';
@@ -14,8 +15,13 @@ import { sendMail } from '../services/mailService';
 import { checkProductAvailability } from '../helper/orderHelper';
 
 // CREATE ORDER FOR COMBO OR SOLO PRODUCT (ONLINE)
+interface OrderItemPayload {
+  productId: string;
+  quantity?: number;
+}
+
 export const createComboProductOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const { userId, productId, vendorId, quantity, paymentMethod } = req.body;
+  const { userId, productId, vendorId, quantity, paymentMethod, items } = req.body;
 
   const user = await User.findById(userId);
   if (!user) {
@@ -23,14 +29,8 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     return;
   }
 
-  const product = await Product.findById(productId).populate('skus.sku');
-  if (!product) {
-    res.status(404).json({ message: 'Product not found' });
-    return;
-  }
-
-  if (!product.active) {
-    res.status(400).json({ message: 'Product is not active' });
+  if (!vendorId) {
+    res.status(400).json({ message: 'vendorId is required' });
     return;
   }
 
@@ -40,8 +40,38 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     return;
   }
 
-  const orderQuantity = quantity || 1;
-  const productSkus = product.skus.map(s => s.sku);
+  let orderItemsPayload: OrderItemPayload[] = [];
+
+  if (Array.isArray(items) && items.length > 0) {
+    orderItemsPayload = items.map((item: any) => ({
+      productId: item.productId,
+      quantity: item.quantity
+    }));
+  } else if (productId) {
+    orderItemsPayload = [{ productId, quantity }];
+  }
+
+  if (orderItemsPayload.length === 0) {
+    res.status(400).json({ message: 'At least one product must be provided' });
+    return;
+  }
+
+  const sanitizedOrderItems = orderItemsPayload.map((entry) => {
+    if (!entry.productId) {
+      throw new Error('productId is required for each order item');
+    }
+    if (!Types.ObjectId.isValid(entry.productId)) {
+      throw new Error(`Invalid productId: ${entry.productId}`);
+    }
+    const qty = Number(entry.quantity || 1);
+    if (!Number.isInteger(qty) || qty <= 0) {
+      throw new Error('Quantity must be a positive integer for each order item');
+    }
+    return { productId: entry.productId, quantity: qty };
+  });
+
+  const productCache = new Map<string, any>();
+  const skuCache = new Map<string, any>();
 
   // Check and reserve inventory for all SKUs atomically
   const session = await Inventory.startSession();
@@ -52,84 +82,102 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     const orderItems = [];
     const reservations = [];
 
-    for (const skuRef of productSkus) {
-      const sku = await Sku.findById(skuRef);
-      if (!sku) {
-        await session.abortTransaction();
-        res.status(404).json({ message: `SKU not found in product` });
-        return;
-      }
-
-      // Find ALL inventory records for this SKU at this vendor
-      const inventories = await Inventory.find({
-        sku: skuRef,
-        vendor: vendorId
-      }).session(session);
-
-      console.log(`Checking SKU: ${sku.title} (${skuRef})`);
-      console.log(`Vendor: ${vendorId}`);
-      console.log(`Found ${inventories.length} inventory records`);
-
-      if (inventories.length > 0) {
-        inventories.forEach((inv, idx) => {
-          console.log(`  Record ${idx + 1}: qty=${inv.quantity}, reserved=${inv.reservedQuantity || 0}`);
-        });
-      }
-
-      if (!inventories || inventories.length === 0) {
-        await session.abortTransaction();
-        res.status(400).json({
-          message: `SKU ${sku.title} not available at this vendor`
-        });
-        return;
-      }
-
-      // Calculate total available quantity across all inventory records
-      const totalAvailableQuantity = inventories.reduce((sum, inv) => {
-        return sum + (inv.quantity - (inv.reservedQuantity || 0));
-      }, 0);
-
-      if (totalAvailableQuantity < orderQuantity) {
-        await session.abortTransaction();
-        res.status(400).json({
-          message: `Insufficient stock for ${sku.title}. Available: ${totalAvailableQuantity}, Requested: ${orderQuantity}`
-        });
-        return;
-      }
-
-      // Reserve the inventory across multiple records if needed
-      let remainingToReserve = orderQuantity;
-      for (const inventory of inventories) {
-        if (remainingToReserve <= 0) break;
-
-        const availableInThisRecord = inventory.quantity - (inventory.reservedQuantity || 0);
-        const toReserveFromThis = Math.min(availableInThisRecord, remainingToReserve);
-
-        if (toReserveFromThis > 0) {
-          inventory.reservedQuantity = (inventory.reservedQuantity || 0) + toReserveFromThis;
-          await inventory.save({ session });
-          remainingToReserve -= toReserveFromThis;
-          reservations.push({ inventory, quantity: toReserveFromThis });
+    for (const entry of sanitizedOrderItems) {
+      const productIdKey = entry.productId.toString();
+      let product = productCache.get(productIdKey);
+      if (!product) {
+        product = await Product.findById(entry.productId).populate('skus.sku');
+        if (!product) {
+          await session.abortTransaction();
+          res.status(404).json({ message: `Product not found: ${entry.productId}` });
+          return;
         }
+        if (!product.active) {
+          await session.abortTransaction();
+          res.status(400).json({ message: `Product inactive: ${product.title}` });
+          return;
+        }
+        productCache.set(productIdKey, product);
       }
 
-      const price = sku.mrp || 0;
-      orderItems.push({
-        sku: skuRef,
-        quantity: orderQuantity,
-        price: price,
-        vendor: vendorId
-      });
+      const productQuantity = entry.quantity;
+      const productSkus = product.skus.map((s: any) => s.sku);
 
-      total += price * orderQuantity;
+      for (const skuRef of productSkus) {
+        const skuId = skuRef.toString();
+        let sku = skuCache.get(skuId);
+        if (!sku) {
+          sku = await Sku.findById(skuRef);
+          if (!sku) {
+            await session.abortTransaction();
+            res.status(404).json({ message: `SKU not found in product` });
+            return;
+          }
+          skuCache.set(skuId, sku);
+        }
+
+        const inventories = await Inventory.find({
+          sku: skuRef,
+          vendor: vendorId
+        }).session(session);
+
+        if (!inventories || inventories.length === 0) {
+          await session.abortTransaction();
+          res.status(400).json({
+            message: `SKU ${sku.title} not available at this vendor`
+          });
+          return;
+        }
+
+        const totalAvailableQuantity = inventories.reduce((sum, inv) => {
+          return sum + (inv.quantity - (inv.reservedQuantity || 0));
+        }, 0);
+
+        if (totalAvailableQuantity < productQuantity) {
+          await session.abortTransaction();
+          res.status(400).json({
+            message: `Insufficient stock for ${sku.title}. Available: ${totalAvailableQuantity}, Requested: ${productQuantity}`
+          });
+          return;
+        }
+
+        let remainingToReserve = productQuantity;
+        for (const inventory of inventories) {
+          if (remainingToReserve <= 0) break;
+
+          const availableInThisRecord = inventory.quantity - (inventory.reservedQuantity || 0);
+          const toReserveFromThis = Math.min(availableInThisRecord, remainingToReserve);
+
+          if (toReserveFromThis > 0) {
+            inventory.reservedQuantity = (inventory.reservedQuantity || 0) + toReserveFromThis;
+            await inventory.save({ session });
+            remainingToReserve -= toReserveFromThis;
+            reservations.push({ inventory, quantity: toReserveFromThis });
+          }
+        }
+
+        const pricePerSku = sku.mrp || 0;
+        orderItems.push({
+          product: product._id,
+          sku: skuRef,
+          quantity: productQuantity,
+          price: pricePerSku,
+          vendor: vendorId
+        });
+
+        total += pricePerSku * productQuantity;
+      }
     }
 
     const orderVFC = generateSixDigitAlphaNumericCode();
     const orderCode = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+    const primaryProductId =
+      sanitizedOrderItems.length === 1 ? new Types.ObjectId(sanitizedOrderItems[0].productId) : undefined;
+
     const order = await Order.create([{
       user: userId,
-      product: productId,
+      product: primaryProductId,
       vendor: vendorId,
       items: orderItems,
       totalAmount: total,
@@ -143,13 +191,19 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     await session.commitTransaction();
 
     try {
+      const productNames = sanitizedOrderItems
+        .map((entry) => {
+          const product = productCache.get(entry.productId.toString());
+          return `${product?.title || 'Product'} x ${entry.quantity}`;
+        })
+        .join(', ');
+
       await sendMail({
         to: user.email,
         subject: 'Order Verification Code',
         html: `<p>Your order verification code is: <strong>${orderVFC}</strong></p>
                <p>Order Details:</p>
-               <p>Product: ${product.title}</p>
-               <p>Quantity: ${orderQuantity}</p>
+               <p>Items: ${productNames}</p>
                <p>Total Amount: ₹${total}</p>
                <p>Please present this code when picking up your order.</p>`
       });

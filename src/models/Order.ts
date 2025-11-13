@@ -1,14 +1,15 @@
-import mongoose, { Schema, Document } from 'mongoose';
+import mongoose, { Schema, Document, Types } from 'mongoose';
 
 export interface IOrder extends Document {
-  user: Schema.Types.ObjectId;
-  vendor: Schema.Types.ObjectId;
-  product?: Schema.Types.ObjectId;
+  user: Types.ObjectId;
+  vendor: Types.ObjectId;
+  product?: Types.ObjectId;
   items: Array<{
-    sku: Schema.Types.ObjectId;
+    product?: Types.ObjectId;
+    sku: Types.ObjectId;
     quantity: number;
     price: number;
-    vendor?: Schema.Types.ObjectId;
+    vendor?: Types.ObjectId;
   }>;
   totalAmount: number;
   paymentMethod: 'online' | 'pickup' | 'cash';
@@ -26,6 +27,7 @@ const OrderSchema: Schema = new Schema(
     product: { type: Schema.Types.ObjectId, ref: 'Product' },
     items: [
       {
+        product: { type: Schema.Types.ObjectId, ref: 'Product' },
         sku: { type: Schema.Types.ObjectId, ref: 'Sku' },
         quantity: { type: Number },
         price: { type: Number },
