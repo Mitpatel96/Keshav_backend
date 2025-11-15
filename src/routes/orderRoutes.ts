@@ -1,6 +1,23 @@
 import express from 'express';
 import { adminOnly, protect } from '../middleware/auth';
-import { adminUpdatePickupAddress, createWalkInOrder, deductVendorCash, generateBill, getOrders, getOrderById, getOrdersByUserId, getOrdersByVendorId, getPartiallyRejectedOrders, getVendorCashBalance, verifyOrderWithVFC, getCashDeductionHistory, getVendorCashDeductionHistory, createComboProductOrder, confirmComboProductOrder } from '../controllers/orderController';
+import {
+    adminUpdatePickupAddress,
+    createWalkInOrder,
+    deductVendorCash,
+    generateBill,
+    getOrders,
+    getOrderById,
+    getOrdersByUserId,
+    getOrdersByVendorId,
+    getPartiallyRejectedOrders,
+    getVendorCashBalance,
+    verifyOrderWithVFC,
+    getCashDeductionHistory,
+    getVendorCashDeductionHistory,
+    createComboProductOrder,
+    confirmComboProductOrder,
+    getUserPreviousOrders
+} from '../controllers/orderController';
 
 const router = express.Router();
 
@@ -19,7 +36,8 @@ router.get('/vendor/:vendorId/cash-deduction-history', protect, getVendorCashDed
 router.get('/cash-deduction-history', protect, adminOnly, getCashDeductionHistory);
 
 router.get('/', protect, getOrders);
-router.get('/:id', protect, getOrderById);
+router.get('/user/:userId/previous', protect, getUserPreviousOrders);
 router.get('/user/:userId', protect, getOrdersByUserId);
+router.get('/:id', protect, getOrderById);
 
 export default router;

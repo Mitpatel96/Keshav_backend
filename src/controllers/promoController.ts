@@ -4,6 +4,8 @@ import { FilterQuery, Types } from 'mongoose';
 import XLSX from 'xlsx';
 import PromoBatch, { IPromoBatch, PromoDiscountType, PromoUsageScope } from '../models/PromoBatch';
 import PromoCode, { IPromoCode, PromoCodeStatus } from '../models/PromoCode';
+import { buildCheckoutSummary, CheckoutItemInput } from '../services/orderService';
+import { validatePromoForCheckout } from '../services/promoService';
 
 interface AuthenticatedRequest<T = any> extends Request {
   user?: {
@@ -408,6 +410,7 @@ export const deactivatePromoBatch = asyncHandler(async (req: Request, res: Respo
   res.json({ message: 'Promo batch deactivated successfully', batch });
 });
 
+// Not using this api
 export const redeemPromoCode = asyncHandler(
   async (req: AuthenticatedRequest<{ code: string; productIds?: string[] }>, res: Response): Promise<void> => {
     const { code, productIds } = req.body;
@@ -525,6 +528,105 @@ export const redeemPromoCode = asyncHandler(
         endDate: batch.endDate
       },
       products: batch.products
+    });
+  }
+);
+
+interface ApplyPromoRequestBody {
+  promoCode: string;
+  vendorId: string;
+  items: Array<{
+    productId: string;
+    quantity?: number;
+  }>;
+}
+
+export const applyPromoToCart = asyncHandler(
+  async (req: AuthenticatedRequest<ApplyPromoRequestBody>, res: Response): Promise<void> => {
+    const { promoCode, vendorId, items } = req.body;
+
+    if (!req.user?._id) {
+      res.status(401).json({ message: 'Authentication required' });
+      return;
+    }
+
+    if (!promoCode || typeof promoCode !== 'string') {
+      res.status(400).json({ message: 'promoCode is required' });
+      return;
+    }
+
+    if (!vendorId || typeof vendorId !== 'string') {
+      res.status(400).json({ message: 'vendorId is required' });
+      return;
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      res.status(400).json({ message: 'At least one cart item is required' });
+      return;
+    }
+
+    const checkoutItems: CheckoutItemInput[] = items.map((item) => ({
+      productId: item.productId,
+      quantity: item.quantity ?? 1
+    }));
+
+    const userObjectId =
+      typeof req.user._id === 'string' ? new Types.ObjectId(req.user._id) : (req.user._id as Types.ObjectId);
+
+    const summary = await buildCheckoutSummary(checkoutItems, vendorId);
+    const validation = await validatePromoForCheckout(promoCode, userObjectId, summary.items);
+
+    const applicableProductIds = new Set(validation.batch.products.map((id) => id.toString()));
+    const qualifyingIndexes = summary.items
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => applicableProductIds.has(item.product.toString()))
+      .map(({ index }) => index);
+
+    const applicableSubtotal = summary.items
+      .filter((item) => applicableProductIds.has(item.product.toString()))
+      .reduce((sum, item) => sum + item.subtotal, 0);
+
+    let remainingDiscount = validation.discountAmount;
+
+    const breakdown = summary.items.map((item, index) => {
+      let discountApplied = 0;
+      if (applicableSubtotal > 0 && applicableProductIds.has(item.product.toString())) {
+        if (index === qualifyingIndexes[qualifyingIndexes.length - 1]) {
+          discountApplied = Number(remainingDiscount.toFixed(2));
+        } else {
+          const proportional = (item.subtotal / applicableSubtotal) * validation.discountAmount;
+          discountApplied = Number(proportional.toFixed(2));
+          remainingDiscount = Number((remainingDiscount - discountApplied).toFixed(2));
+        }
+      }
+
+      const finalSubtotal = Number(Math.max(0, item.subtotal - discountApplied).toFixed(2));
+
+      return {
+        productId: item.product.toString(),
+        productTitle: item.productTitle,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        subtotal: Number(item.subtotal.toFixed(2)),
+        discountApplied,
+        finalSubtotal
+      };
+    });
+
+    const totalDiscountApplied = breakdown.reduce((sum, entry) => sum + entry.discountApplied, 0);
+    const total = Number(Math.max(0, summary.subtotal - totalDiscountApplied).toFixed(2));
+
+    res.json({
+      message: 'Promo applied successfully',
+      promoCode: validation.promoCode.code,
+      discountType: validation.batch.discountType,
+      discountValue: validation.batch.discountValue,
+      breakdown,
+      summary: {
+        subtotal: Number(summary.subtotal.toFixed(2)),
+        discount: Number(totalDiscountApplied.toFixed(2)),
+        total
+      }
     });
   }
 );

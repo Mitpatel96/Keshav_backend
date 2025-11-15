@@ -5,7 +5,8 @@ import {
   getPromoBatchById,
   deactivatePromoBatch,
   redeemPromoCode,
-  exportPromoBatch
+  exportPromoBatch,
+  applyPromoToCart,
 } from '../controllers/promoController';
 import { protect, adminOnly } from '../middleware/auth';
 
@@ -17,5 +18,6 @@ router.get('/batches/:id', protect, adminOnly, getPromoBatchById);
 router.patch('/batches/:id/deactivate', protect, adminOnly, deactivatePromoBatch);
 router.get('/batches/:id/export', protect, adminOnly, exportPromoBatch);
 router.post('/redeem', protect, redeemPromoCode);
+router.post('/apply', protect, applyPromoToCart);
 
 export default router;

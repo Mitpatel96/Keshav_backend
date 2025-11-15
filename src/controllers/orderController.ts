@@ -12,136 +12,146 @@ import CashDeductionHistory from '../models/CashDeductionHistory';
 import Vendor from '../models/Vendor';
 import User from '../models/User';
 import { sendMail } from '../services/mailService';
-import { checkProductAvailability } from '../helper/orderHelper';
+import { checkProductAvailability, buildCheckoutSummary, CheckoutItemInput } from '../services/orderService';
+import Payment from '../models/Payment';
+import { consumePromoCode } from '../services/promoService';
 
-// CREATE ORDER FOR COMBO OR SOLO PRODUCT (ONLINE)
-interface OrderItemPayload {
-  productId: string;
-  quantity?: number;
+interface AuthenticatedRequest extends Request {
+  user?: {
+    _id: Types.ObjectId | string;
+    role?: string;
+  };
 }
 
-export const createComboProductOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const { userId, productId, vendorId, quantity, paymentMethod, items } = req.body;
+// CREATE ORDER FOR COMBO OR SOLO PRODUCT (ONLINE)
 
-  const user = await User.findById(userId);
+export const createComboProductOrder = asyncHandler(async (req: Request, res: Response): Promise<void> => {
+  const {
+    userId: rawUserId,
+    vendorId: rawVendorId,
+    productId,
+    quantity,
+    paymentMethod,
+    items,
+    paymentId
+  } = req.body;
+
+  let userObjectId: Types.ObjectId | null = rawUserId ? new Types.ObjectId(rawUserId) : null;
+  let vendorObjectId: Types.ObjectId | null = rawVendorId ? new Types.ObjectId(rawVendorId) : null;
+  let checkoutItems: CheckoutItemInput[] = [];
+  let paymentRecord = null;
+  let discountAmount = 0;
+  let promoCodeApplied: string | undefined;
+  let promoCodeId: Types.ObjectId | undefined;
+
+  if (paymentId) {
+    paymentRecord = await Payment.findById(paymentId);
+    if (!paymentRecord) {
+      res.status(404).json({ message: 'Payment record not found' });
+      return;
+    }
+
+    if (paymentRecord.status !== 'succeeded') {
+      res.status(400).json({ message: 'Payment not completed yet' });
+      return;
+    }
+
+    if (paymentRecord.order) {
+      res.status(400).json({ message: 'Order already created for this payment' });
+      return;
+    }
+
+    userObjectId = paymentRecord.user;
+    vendorObjectId = paymentRecord.vendor;
+    checkoutItems = paymentRecord.items.map((item) => ({
+      productId: item.product.toString(),
+      quantity: item.quantity
+    }));
+    discountAmount = paymentRecord.discountAmount || 0;
+    promoCodeApplied = paymentRecord.promoCode;
+    promoCodeId = paymentRecord.promoCodeId || undefined;
+  }
+
+  if (!userObjectId) {
+    res.status(400).json({ message: 'userId is required' });
+    return;
+  }
+
+  const user = await User.findById(userObjectId);
   if (!user) {
     res.status(404).json({ message: 'User not found' });
     return;
   }
 
-  if (!vendorId) {
-    res.status(400).json({ message: 'vendorId is required' });
-    return;
+  if (!vendorObjectId) {
+    if (!rawVendorId) {
+      res.status(400).json({ message: 'vendorId is required' });
+      return;
+    }
+    vendorObjectId = new Types.ObjectId(rawVendorId);
   }
 
-  const vendor = await Vendor.findById(vendorId);
+  const vendor = await Vendor.findById(vendorObjectId);
   if (!vendor) {
     res.status(404).json({ message: 'Vendor not found' });
     return;
   }
 
-  let orderItemsPayload: OrderItemPayload[] = [];
-
-  if (Array.isArray(items) && items.length > 0) {
-    orderItemsPayload = items.map((item: any) => ({
-      productId: item.productId,
-      quantity: item.quantity
-    }));
-  } else if (productId) {
-    orderItemsPayload = [{ productId, quantity }];
+  if (checkoutItems.length === 0) {
+    if (Array.isArray(items) && items.length > 0) {
+      checkoutItems = items.map((item: any) => ({
+        productId: item.productId,
+        quantity: item.quantity || 1
+      }));
+    } else if (productId) {
+      checkoutItems = [
+        {
+          productId,
+          quantity: quantity || 1
+        }
+      ];
+    } else {
+      res.status(400).json({ message: 'items or productId must be provided' });
+      return;
+    }
   }
 
-  if (orderItemsPayload.length === 0) {
-    res.status(400).json({ message: 'At least one product must be provided' });
-    return;
+  const checkoutSummary = await buildCheckoutSummary(checkoutItems, vendorObjectId.toString());
+  const calculatedSubtotal = checkoutSummary.subtotal;
+  const rawTotal = calculatedSubtotal;
+  const finalTotal = Math.max(0, rawTotal - discountAmount);
+
+  if (paymentRecord) {
+    if (Math.abs(paymentRecord.subtotal - calculatedSubtotal) > 0.5) {
+      res.status(400).json({ message: 'Order amount has changed. Please recreate payment.' });
+      return;
+    }
+    if (Math.abs(paymentRecord.totalAmount - finalTotal) > 0.5) {
+      res.status(400).json({ message: 'Order amount mismatch with payment. Please recreate payment.' });
+      return;
+    }
   }
 
-  const sanitizedOrderItems = orderItemsPayload.map((entry) => {
-    if (!entry.productId) {
-      throw new Error('productId is required for each order item');
-    }
-    if (!Types.ObjectId.isValid(entry.productId)) {
-      throw new Error(`Invalid productId: ${entry.productId}`);
-    }
-    const qty = Number(entry.quantity || 1);
-    if (!Number.isInteger(qty) || qty <= 0) {
-      throw new Error('Quantity must be a positive integer for each order item');
-    }
-    return { productId: entry.productId, quantity: qty };
-  });
-
-  const productCache = new Map<string, any>();
-  const skuCache = new Map<string, any>();
-
-  // Check and reserve inventory for all SKUs atomically
   const session = await Inventory.startSession();
   session.startTransaction();
 
   try {
-    let total = 0;
-    const orderItems = [];
-    const reservations = [];
+    const orderItems: any[] = [];
 
-    for (const entry of sanitizedOrderItems) {
-      const productIdKey = entry.productId.toString();
-      let product = productCache.get(productIdKey);
-      if (!product) {
-        product = await Product.findById(entry.productId).populate('skus.sku');
-        if (!product) {
-          await session.abortTransaction();
-          res.status(404).json({ message: `Product not found: ${entry.productId}` });
-          return;
-        }
-        if (!product.active) {
-          await session.abortTransaction();
-          res.status(400).json({ message: `Product inactive: ${product.title}` });
-          return;
-        }
-        productCache.set(productIdKey, product);
-      }
-
-      const productQuantity = entry.quantity;
-      const productSkus = product.skus.map((s: any) => s.sku);
-
-      for (const skuRef of productSkus) {
-        const skuId = skuRef.toString();
-        let sku = skuCache.get(skuId);
-        if (!sku) {
-          sku = await Sku.findById(skuRef);
-          if (!sku) {
-            await session.abortTransaction();
-            res.status(404).json({ message: `SKU not found in product` });
-            return;
-          }
-          skuCache.set(skuId, sku);
-        }
+    for (const preparedItem of checkoutSummary.items) {
+      for (const component of preparedItem.components) {
+        const totalRequired = component.quantityPerBundle * preparedItem.quantity;
 
         const inventories = await Inventory.find({
-          sku: skuRef,
-          vendor: vendorId
+          sku: component.sku,
+          vendor: vendorObjectId
         }).session(session);
 
         if (!inventories || inventories.length === 0) {
-          await session.abortTransaction();
-          res.status(400).json({
-            message: `SKU ${sku.title} not available at this vendor`
-          });
-          return;
+          throw new Error(`SKU ${component.skuTitle} not available at this vendor`);
         }
 
-        const totalAvailableQuantity = inventories.reduce((sum, inv) => {
-          return sum + (inv.quantity - (inv.reservedQuantity || 0));
-        }, 0);
-
-        if (totalAvailableQuantity < productQuantity) {
-          await session.abortTransaction();
-          res.status(400).json({
-            message: `Insufficient stock for ${sku.title}. Available: ${totalAvailableQuantity}, Requested: ${productQuantity}`
-          });
-          return;
-        }
-
-        let remainingToReserve = productQuantity;
+        let remainingToReserve = totalRequired;
         for (const inventory of inventories) {
           if (remainingToReserve <= 0) break;
 
@@ -152,50 +162,60 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
             inventory.reservedQuantity = (inventory.reservedQuantity || 0) + toReserveFromThis;
             await inventory.save({ session });
             remainingToReserve -= toReserveFromThis;
-            reservations.push({ inventory, quantity: toReserveFromThis });
           }
         }
 
-        const pricePerSku = sku.mrp || 0;
-        orderItems.push({
-          product: product._id,
-          sku: skuRef,
-          quantity: productQuantity,
-          price: pricePerSku,
-          vendor: vendorId
-        });
+        if (remainingToReserve > 0) {
+          throw new Error(`Insufficient stock for ${component.skuTitle}`);
+        }
 
-        total += pricePerSku * productQuantity;
+        orderItems.push({
+          product: preparedItem.product,
+          sku: component.sku,
+          quantity: component.quantityPerBundle * preparedItem.quantity,
+          price: component.unitPrice,
+          vendor: vendorObjectId
+        });
       }
     }
 
     const orderVFC = generateSixDigitAlphaNumericCode();
     const orderCode = `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    const primaryProductId =
-      sanitizedOrderItems.length === 1 ? new Types.ObjectId(sanitizedOrderItems[0].productId) : undefined;
-
-    const order = await Order.create([{
-      user: userId,
-      product: primaryProductId,
-      vendor: vendorId,
-      items: orderItems,
-      totalAmount: total,
-      paymentMethod: paymentMethod || 'online',
-      status: 'pending_verification',
-      orderVFC,
-      orderCode,
-      orderType: 'online'
-    }], { session });
+    const [createdOrder] = await Order.create(
+      [
+        {
+          user: userObjectId,
+          product: checkoutSummary.items.length === 1 ? checkoutSummary.items[0].product : undefined,
+          vendor: vendorObjectId,
+          items: orderItems,
+          totalAmount: finalTotal,
+          paymentMethod: paymentMethod || 'online',
+          status: 'pending_verification',
+          orderVFC,
+          orderCode,
+          orderType: 'online',
+          discountAmount,
+          promoCode: promoCodeApplied,
+          payment: paymentRecord?._id
+        }
+      ],
+      { session }
+    );
 
     await session.commitTransaction();
 
+    if (paymentRecord) {
+      paymentRecord.order = createdOrder._id;
+      await paymentRecord.save();
+      if (promoCodeId) {
+        await consumePromoCode(promoCodeId, paymentRecord.user);
+      }
+    }
+
     try {
-      const productNames = sanitizedOrderItems
-        .map((entry) => {
-          const product = productCache.get(entry.productId.toString());
-          return `${product?.title || 'Product'} x ${entry.quantity}`;
-        })
+      const itemSummary = checkoutSummary.items
+        .map((item) => `${item.productTitle} x ${item.quantity}`)
         .join(', ');
 
       await sendMail({
@@ -203,17 +223,16 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
         subject: 'Order Verification Code',
         html: `<p>Your order verification code is: <strong>${orderVFC}</strong></p>
                <p>Order Details:</p>
-               <p>Items: ${productNames}</p>
-               <p>Total Amount: ₹${total}</p>
+               <p>Items: ${itemSummary}</p>
+               <p>Total Amount: ₹${finalTotal}</p>
                <p>Please present this code when picking up your order.</p>`
       });
     } catch (error) {
       console.error('Failed to send order verification email:', error);
     }
 
-    const populatedOrder = await Order.findById(order[0]._id)
+    const populatedOrder = await Order.findById(createdOrder._id)
       .populate('user')
-      .populate('product')
       .populate('vendor')
       .populate('items.sku');
 
@@ -950,6 +969,62 @@ export const getOrders = asyncHandler(async (req: Request, res: Response): Promi
     res.status(500).json({ message: 'Internal server error while fetching orders' });
   }
 });
+
+export const getUserPreviousOrders = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    const paramUserId = (req.params as { userId?: string }).userId || (req.query.userId as string);
+    const effectiveUserId = paramUserId || (req.user?._id?.toString() ?? '');
+
+    if (!effectiveUserId) {
+      res.status(400).json({ message: 'userId is required' });
+      return;
+    }
+
+    if (!Types.ObjectId.isValid(effectiveUserId)) {
+      res.status(400).json({ message: 'Invalid userId' });
+      return;
+    }
+
+    const isAdmin = req.user?.role === 'admin';
+    const isSameUser = req.user?._id?.toString() === effectiveUserId;
+    if (!isAdmin && !isSameUser) {
+      res.status(403).json({ message: 'Not authorized to view other users orders' });
+      return;
+    }
+
+    const limitParam = parseInt(req.query.limit as string, 10);
+    const limit = Number.isFinite(limitParam) ? Math.min(Math.max(limitParam, 1), 50) : 5;
+
+    type PreviousOrderLean = {
+      _id: Types.ObjectId;
+      createdAt?: Date;
+      orderCode?: string;
+      orderVFC?: string;
+      status: string;
+      totalAmount: number;
+      discountAmount?: number;
+      promoCode?: string;
+    };
+
+    const orders = await Order.find({ user: new Types.ObjectId(effectiveUserId) })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .select('orderCode orderVFC status totalAmount discountAmount promoCode vendor createdAt items')
+      .populate('vendor', 'name email phone')
+      .populate('items.sku', 'title')
+      .lean<PreviousOrderLean[]>();
+
+    res.json({
+      data: orders,
+      metadata: {
+        userId: effectiveUserId,
+        limit,
+        returnedCount: orders.length,
+        latestOrderDate: orders.length ? orders[0].createdAt ?? null : null
+      }
+    });
+  }
+);
 
 // GET ORDER BY ID
 export const getOrderById = asyncHandler(async (req: Request, res: Response): Promise<void> => {

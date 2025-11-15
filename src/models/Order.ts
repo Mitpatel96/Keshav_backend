@@ -18,6 +18,9 @@ export interface IOrder extends Document {
   orderCode?: string; // Unique order code
   pickupAddress?: string; // Vendor address for pickup
   orderType: 'online' | 'walk_in'; // New field to distinguish order types
+  discountAmount?: number;
+  promoCode?: string;
+  payment?: Types.ObjectId;
 }
 
 const OrderSchema: Schema = new Schema(
@@ -40,7 +43,10 @@ const OrderSchema: Schema = new Schema(
     orderVFC: { type: String }, // 6-digit alphanumeric code for online purchases
     orderCode: { type: String, unique: true }, // Unique order code
     pickupAddress: { type: String },
-    orderType: { type: String, enum: ['online', 'walk_in'], default: 'online' }
+    orderType: { type: String, enum: ['online', 'walk_in'], default: 'online' },
+    discountAmount: { type: Number, default: 0 },
+    promoCode: { type: String },
+    payment: { type: Schema.Types.ObjectId, ref: 'Payment' }
   },
   { timestamps: true }
 );

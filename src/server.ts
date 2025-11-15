@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import morgan from 'morgan';
 import cors from 'cors';
 import connectDB from './config/db';
+import { handleStripeWebhook } from './controllers/paymentController';
 import userRoutes from './routes/userRoutes';
 import vendorRoutes from './routes/vendorRoutes';
 import skuRoutes from './routes/skuRoutes';
@@ -23,9 +24,10 @@ import userSideRoutes from './routes/user/userSideRoutes';
 
 dotenv.config();
 const app = express();
-app.use(express.json());
 app.use(cors());
 app.use(morgan('dev'));
+app.post('/api/payment/stripe-webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
+app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
 
