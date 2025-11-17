@@ -11,6 +11,7 @@ export interface IUser extends Document {
   role: 'admin' | 'vendor' | 'user';
   active: boolean;
   temporaryUser: boolean; // Add this line
+  pincode?: string | null;
   location?: {
     type: string;
     coordinates: [number, number]; // [longitude, latitude]
@@ -29,6 +30,7 @@ const UserSchema: Schema = new Schema(
     dob: { type: Date, required: true, default: null },
     role: { type: String, enum: ['admin', 'vendor', 'user'], default: 'user' },
     active: { type: Boolean, default: true },
+    pincode: { type: String, default: null },
     location: {
       type: {
         type: String,

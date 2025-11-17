@@ -134,27 +134,38 @@ export const getNearestVendors = async (req: Request, res: Response) => {
 export const updateUserLocationByCoordinates = async (req: Request, res: Response) => {
     try {
         const { userId } = req.params;
-        const { longitude, latitude } = req.body;
+        const { longitude, latitude, pincode } = req.body;
 
-        if (longitude === undefined || latitude === undefined) {
-            return res.status(400).json({ error: "longitude and latitude are required" });
+        const updateData: any = {};
+
+        // If pincode is provided, only update pincode
+        if (pincode !== undefined && pincode !== null) {
+            updateData.pincode = pincode;
         }
 
-        const lng = parseFloat(longitude);
-        const lat = parseFloat(latitude);
+        // If longitude and latitude are provided, only update location coordinates
+        if (longitude !== undefined && latitude !== undefined) {
+            const lng = parseFloat(longitude);
+            const lat = parseFloat(latitude);
 
-        if (isNaN(lng) || isNaN(lat)) {
-            return res.status(400).json({ error: "Invalid longitude or latitude format" });
+            if (isNaN(lng) || isNaN(lat)) {
+                return res.status(400).json({ error: "Invalid longitude or latitude format" });
+            }
+
+            updateData.location = {
+                type: "Point",
+                coordinates: [lng, lat]
+            };
+        }
+
+        // Check if at least one field is being updated
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({ error: "Either pincode or longitude and latitude are required" });
         }
 
         const user = await User.findByIdAndUpdate(
             userId,
-            {
-                location: {
-                    type: "Point",
-                    coordinates: [lng, lat]
-                }
-            },
+            updateData,
             { new: true, select: '-password' }
         );
 
