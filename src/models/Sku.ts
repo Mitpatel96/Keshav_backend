@@ -7,6 +7,8 @@ export interface ISku extends Document {
   category?: Schema.Types.ObjectId;
   images?: string[];
   mrp?: number;
+  unit?: string; // e.g., 'ml', 'kg', 'litre', 'g', 'piece'
+  unitValue?: number; // e.g., 1, 5, 10, 500, 1000
   active: boolean;
 }
 
@@ -18,6 +20,8 @@ const SkuSchema: Schema = new Schema(
     category: { type: Schema.Types.ObjectId, ref: 'Category' },
     images: [{ type: String }],
     mrp: { type: Number },
+    unit: { type: String }, // e.g., 'ml', 'kg', 'litre', 'g', 'piece'
+    unitValue: { type: Number }, // e.g., 1, 5, 10, 500, 1000
     active: { type: Boolean, default: true }
   },
   { timestamps: true }

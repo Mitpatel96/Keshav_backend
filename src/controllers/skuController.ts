@@ -7,9 +7,9 @@ import { kill } from 'process';
 import { ObjectLockLegalHoldStatus } from '@aws-sdk/client-s3';
 
 export const addSku = asyncHandler(async (req: Request, res: Response) => {
-  const { title, brand, category, images, mrp } = req.body;
+  const { title, brand, category, images, mrp, unit, unitValue } = req.body;
   const skuId = generateSkuId(title);
-  const sku = await Sku.create({ skuId, title, brand, category, images, mrp });
+  const sku = await Sku.create({ skuId, title, brand, category, images, mrp, unit, unitValue });
   res.status(201).json(sku);
 });
 

@@ -6,6 +6,7 @@ import Sku from "../models/Sku";
 export interface CheckoutItemInput {
   productId: string;
   quantity: number;
+  skuId?: string; // For solo products: specific variant (SKU) selected by user
 }
 
 export interface PreparedCheckoutItem {
@@ -67,16 +68,84 @@ export async function buildCheckoutSummary(
     const components = [];
     let unitPriceAccumulator = 0;
 
-    for (const skuEntry of product.skus) {
-      const skuDoc = skuEntry.sku as any;
-      const skuId = new Types.ObjectId(skuDoc?._id ?? skuEntry.sku);
-      const sku = skuDoc?._id ? skuDoc : await Sku.findById(skuId);
+    if (product.isCombo) {
+      // Combo product: process all SKUs
+      for (const skuEntry of product.skus) {
+        const skuDoc = skuEntry.sku as any;
+        const skuId = new Types.ObjectId(skuDoc?._id ?? skuEntry.sku);
+        const sku = skuDoc?._id ? skuDoc : await Sku.findById(skuId);
+        if (!sku) {
+          throw new Error(`SKU not found for product ${product.title}`);
+        }
+
+        const inventories = await Inventory.find({
+          sku: skuId,
+          vendor: vendorObjectId
+        });
+
+        if (!inventories || inventories.length === 0) {
+          throw new Error(`SKU ${sku.title} not available at this vendor`);
+        }
+
+        const availableQuantity = inventories.reduce((sum, inv) => {
+          const reserved = inv.reservedQuantity || 0;
+          return sum + Math.max(0, inv.quantity - reserved);
+        }, 0);
+
+        if (availableQuantity < quantity) {
+          throw new Error(
+            `Insufficient stock for ${sku.title}. Available: ${availableQuantity}, Requested: ${quantity}`
+          );
+        }
+
+        const skuPrice = sku.mrp || 0;
+        unitPriceAccumulator += skuPrice;
+        components.push({
+          sku: skuId,
+          quantityPerBundle: 1,
+          skuTitle: sku.title,
+          unitPrice: skuPrice
+        });
+      }
+    } else {
+      // Solo product: process only the selected SKU (or first SKU if not specified)
+      let selectedSkuId: Types.ObjectId;
+
+      if (item.skuId) {
+        // Validate that the provided skuId belongs to this product
+        const skuEntry = product.skus.find((entry: any) => {
+          const entrySkuId = entry.sku?._id?.toString() ?? entry.sku?.toString();
+          return entrySkuId === item.skuId;
+        });
+
+        if (!skuEntry) {
+          throw new Error(`SKU ${item.skuId} does not belong to product ${product.title}`);
+        }
+
+        if (!Types.ObjectId.isValid(item.skuId)) {
+          throw new Error(`Invalid skuId: ${item.skuId}`);
+        }
+
+        selectedSkuId = new Types.ObjectId(item.skuId);
+      } else {
+        // Use first SKU if no skuId provided
+        const firstSku = product.skus[0];
+        const firstSkuId = firstSku?.sku;
+        if (!firstSkuId) {
+          throw new Error(`Product ${product.title} has no SKUs`);
+        }
+        selectedSkuId = new Types.ObjectId(
+          (firstSkuId as any)?._id?.toString() ?? firstSkuId.toString()
+        );
+      }
+
+      const sku = await Sku.findById(selectedSkuId);
       if (!sku) {
         throw new Error(`SKU not found for product ${product.title}`);
       }
 
       const inventories = await Inventory.find({
-        sku: skuId,
+        sku: selectedSkuId,
         vendor: vendorObjectId
       });
 
@@ -96,9 +165,9 @@ export async function buildCheckoutSummary(
       }
 
       const skuPrice = sku.mrp || 0;
-      unitPriceAccumulator += skuPrice;
+      unitPriceAccumulator = skuPrice;
       components.push({
-        sku: skuId,
+        sku: selectedSkuId,
         quantityPerBundle: 1,
         skuTitle: sku.title,
         unitPrice: skuPrice

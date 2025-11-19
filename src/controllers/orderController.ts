@@ -101,13 +101,15 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     if (Array.isArray(items) && items.length > 0) {
       checkoutItems = items.map((item: any) => ({
         productId: item.productId,
-        quantity: item.quantity || 1
+        quantity: item.quantity || 1,
+        skuId: item?.skuId // Include skuId for solo products
       }));
     } else if (productId) {
       checkoutItems = [
         {
           productId,
-          quantity: quantity || 1
+          quantity: quantity || 1,
+          skuId: req.body.skuId // Include skuId if provided
         }
       ];
     } else {

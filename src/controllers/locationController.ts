@@ -71,8 +71,7 @@ export const getNearestVendors = async (req: Request, res: Response) => {
                     pipeline: [{
                         $match: {
                             sku: { $in: skuIdsArray },
-                            quantity: { $gt: 0 },
-                            status: 'confirmed'
+                            quantity: { $gt: 0 }
                         }
                     }]
                 }

@@ -150,6 +150,7 @@ const serializeCart = (cart: any) => {
 type CartItemPayload = {
   productId: string;
   quantity?: number;
+  skuId?: string; // For solo products: user selects a specific variant (SKU)
 };
 
 export const getCart = asyncHandler(async (req: AuthenticatedRequest, res: Response): Promise<void> => {
@@ -179,7 +180,7 @@ export const getCart = asyncHandler(async (req: AuthenticatedRequest, res: Respo
 
 export const addCartItem = asyncHandler(
   async (req: AuthenticatedRequest<CartItemPayload>, res: Response): Promise<void> => {
-    const { productId, quantity = 1 } = req.body;
+    const { productId, quantity = 1, skuId } = req.body;
 
     if (!req.user?._id) {
       res.status(401).json({ message: 'Unauthorized' });
@@ -214,7 +215,51 @@ export const addCartItem = asyncHandler(
       return;
     }
 
-    const { skuId: resolvedSkuId, skuDoc } = await resolveSkuForProduct(product);
+    // For solo products, if skuId is provided, use it; otherwise use first SKU
+    let resolvedSkuId: Types.ObjectId | undefined;
+    let skuDoc: any;
+
+    if (product.isCombo) {
+      // Combo products don't have a single SKU
+      resolvedSkuId = undefined;
+      skuDoc = undefined;
+    } else {
+      // Solo product: use provided skuId or first SKU
+      if (skuId) {
+        // Validate that the provided skuId belongs to this product
+        const skuEntry = product.skus.find((entry: any) => {
+          const entrySkuId = entry.sku?._id?.toString() ?? entry.sku?.toString();
+          return entrySkuId === skuId;
+        });
+
+        if (!skuEntry) {
+          res.status(400).json({ message: `SKU ${skuId} does not belong to this product` });
+          return;
+        }
+
+        if (!Types.ObjectId.isValid(skuId)) {
+          res.status(400).json({ message: 'Invalid skuId' });
+          return;
+        }
+
+        resolvedSkuId = new Types.ObjectId(skuId);
+        skuDoc = await Sku.findById(resolvedSkuId);
+        if (!skuDoc) {
+          res.status(404).json({ message: 'SKU not found' });
+          return;
+        }
+        if (skuDoc.active === false) {
+          res.status(400).json({ message: 'Selected SKU is inactive' });
+          return;
+        }
+      } else {
+        // Use first SKU if no skuId provided
+        const result = await resolveSkuForProduct(product);
+        resolvedSkuId = result.skuId;
+        skuDoc = result.skuDoc;
+      }
+    }
+
     await ensureStockAvailability(product, desiredQuantity, resolvedSkuId);
 
     const unitPrice = product.isCombo
@@ -227,12 +272,19 @@ export const addCartItem = asyncHandler(
 
     const cart = await findOrCreateCart(userId);
 
+    // For solo products, match by product + sku; for combo products, match by product only
     const existingIndex = cart.items.findIndex((item: any) => {
       const sameProduct = item.product.toString() === productId;
-      const sameSku =
-        (!item.sku && !resolvedSkuId) ||
-        (item.sku && resolvedSkuId && item.sku.toString() === resolvedSkuId.toString());
-      return sameProduct && sameSku;
+      if (product.isCombo) {
+        // Combo products: match by product only
+        return sameProduct && item.isCombo;
+      } else {
+        // Solo products: match by product + sku
+        const sameSku =
+          (!item.sku && !resolvedSkuId) ||
+          (item.sku && resolvedSkuId && item.sku.toString() === resolvedSkuId.toString());
+        return sameProduct && sameSku && !item.isCombo;
+      }
     });
 
     if (existingIndex >= 0) {

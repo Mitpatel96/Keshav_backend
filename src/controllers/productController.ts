@@ -3,6 +3,21 @@ import asyncHandler from 'express-async-handler';
 import Product from '../models/Product';
 import Sku from '../models/Sku';
 
+// Helper function to format unit display
+const formatUnitDisplay = (unitValue: number | undefined, unit: string | undefined): string => {
+    if (!unitValue || !unit) return '';
+
+    // Convert to standard format
+    if (unit.toLowerCase() === 'litre' || unit.toLowerCase() === 'liter') {
+        if (unitValue >= 1000) {
+            return `${unitValue / 1000}L`;
+        }
+        return `${unitValue}ml`;
+    }
+
+    return `${unitValue}${unit}`;
+};
+
 // if isCombo : false then - price should come sku'sId mrp  otherwise there should be a text field
 export const createProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const { title, description, isCombo, skus, price, images, strikeThroughPrice } = req.body;
@@ -54,10 +69,35 @@ export const getProducts = asyncHandler(async (req: Request, res: Response): Pro
             .limit(limit)
             .sort({ createdAt: -1 });
 
+        // Transform products for frontend - add variants array for solo products
+        const transformedProducts = products.map((product: any) => {
+            const productObj = product.toObject();
+
+            // If product is NOT a combo and has multiple SKUs, create variants array
+            if (!product.isCombo && product.skus && product.skus.length > 0) {
+                productObj.variants = product.skus.map((skuEntry: any, index: number) => {
+                    const sku = skuEntry.sku;
+                    const display = formatUnitDisplay(sku.unitValue, sku.unit) || sku.title;
+
+                    return {
+                        index,
+                        skuId: sku._id.toString(),
+                        display,
+                        unit: sku.unit || '',
+                        unitValue: sku.unitValue || 0,
+                        price: sku.mrp || 0,
+                        title: sku.title
+                    };
+                });
+            }
+
+            return productObj;
+        });
+
         const totalCount = await Product.countDocuments(filter);
 
         res.json({
-            data: products,
+            data: transformedProducts,
             pagination: {
                 currentPage: page,
                 totalPages: Math.ceil(totalCount / limit),
@@ -84,7 +124,28 @@ export const getProductById = asyncHandler(async (req: Request, res: Response): 
         return;
     }
 
-    res.json(product);
+    // Transform product for frontend - add variants array for solo products
+    const productObj: any = product.toObject();
+
+    // If product is NOT a combo and has multiple SKUs, create variants array
+    if (!product.isCombo && product.skus && product.skus.length > 0) {
+        productObj.variants = product.skus.map((skuEntry: any, index: number) => {
+            const sku = skuEntry.sku;
+            const display = formatUnitDisplay(sku.unitValue, sku.unit) || sku.title;
+
+            return {
+                index,
+                skuId: sku._id.toString(),
+                display,
+                unit: sku.unit || '',
+                unitValue: sku.unitValue || 0,
+                price: sku.mrp || 0,
+                title: sku.title
+            };
+        });
+    }
+
+    res.json(productObj);
 });
 
 export const updateProduct = asyncHandler(async (req: Request, res: Response): Promise<void> => {
