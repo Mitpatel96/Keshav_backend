@@ -36,7 +36,7 @@ export const createProduct = asyncHandler(async (req: Request, res: Response): P
         isCombo,
         skus,
         price,
-        images,
+        images: images ?? [],
         strikeThroughPrice
     });
 

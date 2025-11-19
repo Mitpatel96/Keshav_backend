@@ -15,6 +15,7 @@ import { sendMail } from '../services/mailService';
 import { checkProductAvailability, buildCheckoutSummary, CheckoutItemInput } from '../services/orderService';
 import Payment from '../models/Payment';
 import { consumePromoCode } from '../services/promoService';
+import { emitLowStockNotification, emitNewOrderNotification } from '../services/socketService';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -212,6 +213,28 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
       await paymentRecord.save();
       if (promoCodeId) {
         await consumePromoCode(promoCodeId, paymentRecord.user);
+      }
+    }
+
+    // Emit notification to vendor for online order
+    if (createdOrder.orderType === 'online' && vendorObjectId) {
+      const populatedOrderForNotification = await Order.findById(createdOrder._id)
+        .populate('user', 'name email phone')
+        .populate('items.sku', 'title')
+        .lean();
+
+      if (populatedOrderForNotification) {
+        emitNewOrderNotification(
+          vendorObjectId.toString(),
+          createdOrder._id.toString(),
+          {
+            orderCode: createdOrder.orderCode,
+            orderVFC: orderVFC,
+            totalAmount: finalTotal,
+            items: populatedOrderForNotification.items,
+            user: populatedOrderForNotification.user
+          }
+        );
       }
     }
 
@@ -413,6 +436,15 @@ export const confirmComboProductOrder = asyncHandler(async (req: Request, res: R
             reason: `Order ${order._id}: Sold ${toDeductFromThis} units`,
             referenceId: order._id
           }], { session });
+
+          // Check for low stock after deduction
+          if (inventory.quantity < 30 && inventory.vendor) {
+            const sku = await Sku.findById(item.sku);
+            const vendor = await Vendor.findById(inventory.vendor);
+            if (sku && vendor) {
+              emitLowStockNotification(vendor.name, sku.title, inventory.quantity);
+            }
+          }
 
           remainingToDeduct -= toDeductFromThis;
         }

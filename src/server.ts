@@ -2,8 +2,10 @@ import express from 'express';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
 import cors from 'cors';
+import http from 'http';
 import connectDB from './config/db';
 import { handleStripeWebhook } from './controllers/paymentController';
+import { initializeSocket } from './services/socketService';
 import userRoutes from './routes/userRoutes';
 import vendorRoutes from './routes/vendorRoutes';
 import skuRoutes from './routes/skuRoutes';
@@ -59,4 +61,7 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: any) => 
   res.status(status).json({ message: err.message || 'Server Error' });
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const httpServer = http.createServer(app);
+initializeSocket(httpServer);
+
+httpServer.listen(PORT, () => console.log(`Server running on port ${PORT}`));

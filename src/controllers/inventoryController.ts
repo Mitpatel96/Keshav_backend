@@ -7,6 +7,7 @@ import Vendor from '../models/Vendor';
 import InventoryHistory from '../models/InventoryHistory';
 import { Types } from "mongoose";
 import mongoose from 'mongoose';
+import { emitLowStockNotification } from '../services/socketService';
 
 const ObjectId = Types.ObjectId;
 
@@ -257,6 +258,15 @@ export const respondToPendingTransfer = asyncHandler(async (req: any, res: Respo
 
       await session.commitTransaction();
 
+      // Check for low stock after transaction commits
+      if (vendorInventory.quantity < 30) {
+        const sku = await Sku.findById(pendingTransfer.sku);
+        const vendor = await Vendor.findById(vendorDoc._id);
+        if (sku && vendor) {
+          emitLowStockNotification(vendor.name, sku.title, vendorInventory.quantity);
+        }
+      }
+
       res.json({
         message: 'Transfer accepted successfully',
         pendingTransfer,
@@ -384,15 +394,25 @@ export const getInventoryById = asyncHandler(async (req: any, res: Response): Pr
 
 // UPDATE INVENTORY QUANTITY & PRICE
 export const updateInventoryQty = asyncHandler(async (req: Request, res: Response): Promise<void> => {
-  const inv = await Inventory.findById(req.params.id);
+  const inv = await Inventory.findById(req.params.id).populate('sku').populate('vendor');
   if (!inv) {
     res.status(404).json({ message: 'Inventory not found' });
     return;
   }
 
+  const oldQuantity = inv.quantity;
   inv.quantity = req.body.quantity ?? inv.quantity;
   inv.price = req.body.price ?? inv.price;
   await inv.save();
+
+  // Check for low stock if this is vendor inventory and quantity changed
+  if (inv.vendor && inv.quantity < 30 && inv.quantity !== oldQuantity) {
+    const sku = await Sku.findById(inv.sku);
+    const vendor = await Vendor.findById(inv.vendor);
+    if (sku && vendor) {
+      emitLowStockNotification(vendor.name, sku.title, inv.quantity);
+    }
+  }
 
   res.json(inv);
 });

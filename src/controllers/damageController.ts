@@ -4,6 +4,8 @@ import DamageTicket from '../models/DamageTicket';
 import Inventory from '../models/Inventory';
 import InventoryHistory from '../models/InventoryHistory';
 import Vendor from '../models/Vendor';
+import Sku from '../models/Sku';
+import { emitLowStockNotification } from '../services/socketService';
 
 // CREATE DAMAGE TICKET
 export const createDamageTicket = asyncHandler(async (req: any, res: Response): Promise<void> => {
@@ -47,6 +49,15 @@ export const createDamageTicket = asyncHandler(async (req: any, res: Response): 
       reason: reason || `Admin reported ${type}: ${quantity} units`,
       referenceId: ticket._id
     });
+
+    // Check for low stock if this is vendor inventory
+    if (inventory.quantity < 30 && inventory.vendor) {
+      const sku = await Sku.findById(skuId);
+      const vendor = await Vendor.findById(inventory.vendor);
+      if (sku && vendor) {
+        emitLowStockNotification(vendor.name, sku.title, inventory.quantity);
+      }
+    }
   } else if (user.role === 'vendor') {
     const vendorDoc = await Vendor.findOne({ permanentId: user.permanentId });
     if (!vendorDoc || inventory.vendor?.toString() !== vendorDoc._id.toString()) {
@@ -119,6 +130,15 @@ export const approvePendingDamageTicket = asyncHandler(async (req: any, res: Res
     historyRecord.type = historyRecord.type === 'vendor_damage' ? 'deduct_damage' : 'deduct_lost';
     historyRecord.approvedDamageTicketByAdmin = req.user._id;
     await historyRecord.save();
+  }
+
+  // Check for low stock if this is vendor inventory
+  if (inventory.quantity < 30 && inventory.vendor) {
+    const sku = await Sku.findById(ticket.sku);
+    const vendor = await Vendor.findById(inventory.vendor);
+    if (sku && vendor) {
+      emitLowStockNotification(vendor.name, sku.title, inventory.quantity);
+    }
   }
 
   res.json({
