@@ -6,15 +6,35 @@ let io: SocketIOServer | null = null;
 
 // Initialize Socket.IO server
 export const initializeSocket = (httpServer: HTTPServer) => {
+    // Get allowed origins from environment or allow all
+    const allowedOrigins = process.env.FRONTEND_URL
+        ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
+        : '*';
+
     io = new SocketIOServer(httpServer, {
         cors: {
-            origin: '*', // Configure this based on your frontend URL
-            methods: ['GET', 'POST']
-        }
+            origin: allowedOrigins,
+            methods: ['GET', 'POST'],
+            credentials: true
+        },
+        transports: ['websocket', 'polling'], // Support both transports
+        allowEIO3: true, // Allow Engine.IO v3 clients
+        pingTimeout: 60000, // 60 seconds
+        pingInterval: 25000, // 25 seconds
+        connectTimeout: 45000, // 45 seconds
     });
+
+    console.log('Socket.IO server initialized');
+    console.log('Allowed origins:', allowedOrigins);
 
     io.on('connection', (socket) => {
         console.log('Client connected:', socket.id);
+        console.log('Transport:', socket.conn.transport.name);
+
+        // Handle connection errors
+        socket.on('error', (error) => {
+            console.error('Socket error:', error);
+        });
 
         // Handle authentication - client should emit 'authenticate' with user info
         // For vendors, userId can be either user._id or vendor._id
@@ -45,8 +65,17 @@ export const initializeSocket = (httpServer: HTTPServer) => {
             }
         });
 
-        socket.on('disconnect', () => {
-            console.log('Client disconnected:', socket.id);
+        socket.on('disconnect', (reason) => {
+            console.log('Client disconnected:', socket.id, 'Reason:', reason);
+        });
+
+        // Handle connection timeout
+        socket.conn.on('upgrade', () => {
+            console.log('Transport upgraded to:', socket.conn.transport.name);
+        });
+
+        socket.conn.on('upgradeError', (error) => {
+            console.error('Transport upgrade error:', error);
         });
     });
 
