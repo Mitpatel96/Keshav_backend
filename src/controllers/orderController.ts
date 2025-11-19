@@ -217,24 +217,63 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     }
 
     // Emit notification to vendor for online order
+    console.log(`\n=== Checking Notification Conditions ===`);
+    console.log(`Order Type: ${createdOrder.orderType}`);
+    console.log(`VendorObjectId exists: ${!!vendorObjectId}`);
+    console.log(`VendorObjectId value: ${vendorObjectId}`);
+    console.log(`Order ID: ${createdOrder._id}`);
+    console.log(`Order Code: ${createdOrder.orderCode}`);
+    console.log(`==========================================\n`);
+
     if (createdOrder.orderType === 'online' && vendorObjectId) {
+      console.log(`✅ Conditions met! Preparing notification...`);
+
       const populatedOrderForNotification = await Order.findById(createdOrder._id)
         .populate('user', 'name email phone')
         .populate('items.sku', 'title')
         .lean();
 
       if (populatedOrderForNotification) {
+        const vendorIdString = vendorObjectId.toString();
+        console.log(`\n=== Order Notification Trigger Debug ===`);
+        console.log(`Order created for vendor. VendorObjectId: ${vendorObjectId}`);
+        console.log(`VendorId string: "${vendorIdString}"`);
+        console.log(`Order ID: ${createdOrder._id}`);
+        console.log(`Order Code: ${createdOrder.orderCode}`);
+        console.log(`Order Type: ${createdOrder.orderType}`);
+        console.log(`Order Data to send:`, {
+          orderCode: createdOrder.orderCode,
+          orderVFC: orderVFC,
+          totalAmount: finalTotal,
+          itemsCount: populatedOrderForNotification.items?.length || 0,
+          user: populatedOrderForNotification.user && typeof populatedOrderForNotification.user === 'object' && 'name' in populatedOrderForNotification.user ? {
+            name: (populatedOrderForNotification.user as any).name,
+            email: (populatedOrderForNotification.user as any).email
+          } : null
+        });
+        console.log(`==========================================\n`);
+
         emitNewOrderNotification(
-          vendorObjectId.toString(),
+          vendorIdString,
           createdOrder._id.toString(),
           {
             orderCode: createdOrder.orderCode,
             orderVFC: orderVFC,
             totalAmount: finalTotal,
-            items: populatedOrderForNotification.items,
-            user: populatedOrderForNotification.user
+            items: populatedOrderForNotification.items || [],
+            user: populatedOrderForNotification.user || null
           }
         );
+      } else {
+        console.error(`❌ Failed to populate order for notification. Order ID: ${createdOrder._id}`);
+      }
+    } else {
+      console.log(`❌ Notification conditions not met:`);
+      if (createdOrder.orderType !== 'online') {
+        console.log(`  - Order type is "${createdOrder.orderType}", not "online"`);
+      }
+      if (!vendorObjectId) {
+        console.log(`  - VendorObjectId is missing`);
       }
     }
 
