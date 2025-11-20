@@ -16,6 +16,7 @@ import { checkProductAvailability, buildCheckoutSummary, CheckoutItemInput } fro
 import Payment from '../models/Payment';
 import { consumePromoCode } from '../services/promoService';
 import { emitLowStockNotification, emitNewOrderNotification } from '../services/socketService';
+import Cart from '../models/Cart';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -214,6 +215,20 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
       if (promoCodeId) {
         await consumePromoCode(promoCodeId, paymentRecord.user);
       }
+    }
+
+    try {
+      const cart = await Cart.findOne({ user: userObjectId });
+      if (cart) {
+        cart.items = [] as any;
+        cart.subtotal = 0;
+        cart.totalQuantity = 0;
+        await cart.save();
+        console.log(`Cart cleared for user ${userObjectId} after order creation`);
+      }
+    } catch (cartError) {
+      // Log error but don't fail the order creation if cart clearing fails
+      console.error('Error clearing cart after order creation:', cartError);
     }
 
     // Emit notification to vendor for online order
