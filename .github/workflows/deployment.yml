@@ -20,7 +20,7 @@ jobs:
 
       - name: Deploy to GCP VM (apps-api)
         run: |
-          ssh -o StrictHostKeyChecking=no authrusttechnologies@34.134.37.211 "
+          ssh -o StrictHostKeyChecking=no authrusttechnologies@34.121.192.155"
             cd /home/Keshav_backend && \
             git fetch origin main && \
             git reset --hard origin/main && \
