@@ -16,7 +16,8 @@ import {
     getVendorCashDeductionHistory,
     createComboProductOrder,
     confirmComboProductOrder,
-    getUserPreviousOrders
+    getUserPreviousOrders,
+    getOrderHistory
 } from '../controllers/orderController';
 
 const router = express.Router();
@@ -37,6 +38,7 @@ router.get('/cash-deduction-history', protect, adminOnly, getCashDeductionHistor
 
 router.get('/', protect, getOrders);
 router.get('/user/:userId/previous', protect, getUserPreviousOrders);
+router.get('/user/:userId/history', protect, getOrderHistory);
 router.get('/user/:userId', protect, getOrdersByUserId);
 router.get('/:id', protect, getOrderById);
 

@@ -12,6 +12,9 @@ import CashDeductionHistory from '../models/CashDeductionHistory';
 import Vendor from '../models/Vendor';
 import User from '../models/User';
 import { sendMail } from '../services/mailService';
+import { orderConfirmationEmailTemplate } from '../helper/template';
+import VendorWarehouseTiming from '../models/VendorWarehouseTiming';
+import { getMondayOfWeek } from '../utils/dateUtils';
 import { checkProductAvailability, buildCheckoutSummary, CheckoutItemInput } from '../services/orderService';
 import Payment from '../models/Payment';
 import { consumePromoCode } from '../services/promoService';
@@ -293,21 +296,63 @@ export const createComboProductOrder = asyncHandler(async (req: Request, res: Re
     }
 
     try {
-      const itemSummary = checkoutSummary.items
-        .map((item) => `${item.productTitle} x ${item.quantity}`)
-        .join(', ');
+      // Get vendor warehouse timings for current week
+      const currentWeekMonday = getMondayOfWeek(new Date());
+      // Normalize to start of day UTC
+      const startOfDay = new Date(currentWeekMonday);
+      startOfDay.setUTCHours(0, 0, 0, 0);
+
+      // Use range query to handle timezone differences (same as GET endpoint)
+      const queryStart = new Date(startOfDay);
+      queryStart.setUTCDate(queryStart.getUTCDate() - 1); // Allow 1 day before (for timezone offset)
+      queryStart.setUTCHours(0, 0, 0, 0);
+
+      const queryEnd = new Date(startOfDay);
+      queryEnd.setUTCDate(queryEnd.getUTCDate() + 1); // Allow 1 day after
+      queryEnd.setUTCHours(0, 0, 0, 0);
+
+      const warehouseTiming = await VendorWarehouseTiming.findOne({
+        vendor: vendorObjectId,
+        weekStartDate: {
+          $gte: queryStart,
+          $lt: queryEnd
+        }
+      });
+
+      // Get vendor details
+      const vendorDetails = await Vendor.findById(vendorObjectId);
+
+      // Prepare products list
+      const products = checkoutSummary.items.map((item) => ({
+        name: item.productTitle,
+        quantity: item.quantity
+      }));
+
+      // Determine order name (use first product or "Multiple Products")
+      const orderName = checkoutSummary.items.length === 1
+        ? checkoutSummary.items[0].productTitle
+        : `${checkoutSummary.items.length} Products`;
+
+      // Send order confirmation email with warehouse timings
+      const emailHtml = orderConfirmationEmailTemplate({
+        orderName,
+        orderCode: orderCode,
+        orderVFC: orderVFC,
+        products: products,
+        vendorName: vendor?.name || 'Vendor',
+        vendorPhone: vendorDetails?.phone || '',
+        warehouseTimings: warehouseTiming?.timings || undefined,
+        totalAmount: finalTotal,
+        discountAmount: discountAmount > 0 ? discountAmount : undefined
+      });
 
       await sendMail({
         to: user.email,
-        subject: 'Order Verification Code',
-        html: `<p>Your order verification code is: <strong>${orderVFC}</strong></p>
-               <p>Order Details:</p>
-               <p>Items: ${itemSummary}</p>
-               <p>Total Amount: ₹${finalTotal}</p>
-               <p>Please present this code when picking up your order.</p>`
+        subject: 'Order Confirmation - Keshav Products',
+        html: emailHtml
       });
     } catch (error) {
-      console.error('Failed to send order verification email:', error);
+      console.error('Failed to send order confirmation email:', error);
     }
 
     const populatedOrder = await Order.findById(createdOrder._id)
@@ -1092,9 +1137,15 @@ export const getUserPreviousOrders = asyncHandler(
       totalAmount: number;
       discountAmount?: number;
       promoCode?: string;
+      vendor?: {
+        _id: Types.ObjectId;
+        name: string;
+        email: string;
+        phone: string;
+      };
     };
 
-    const orders = await Order.find({ user: new Types.ObjectId(effectiveUserId) })
+    const orders = await Order.find({ user: new Types.ObjectId(effectiveUserId), status: "confirmed" })
       .sort({ createdAt: -1 })
       .limit(limit)
       .select('orderCode orderVFC status totalAmount discountAmount promoCode vendor createdAt items')
@@ -1102,13 +1153,87 @@ export const getUserPreviousOrders = asyncHandler(
       .populate('items.sku', 'title')
       .lean<PreviousOrderLean[]>();
 
+    // Transform orders to include vendor phone number
+    const ordersWithVendorPhone = orders.map(order => ({
+      ...order,
+      vendorPhone: order.vendor && typeof order.vendor === 'object' && 'phone' in order.vendor
+        ? (order.vendor as any).phone
+        : null
+    }));
+
     res.json({
-      data: orders,
+      data: ordersWithVendorPhone,
       metadata: {
         userId: effectiveUserId,
         limit,
         returnedCount: orders.length,
         latestOrderDate: orders.length ? orders[0].createdAt ?? null : null
+      }
+    });
+  }
+);
+
+// GET ORDER HISTORY (pending_verification orders)
+export const getOrderHistory = asyncHandler(
+  async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+    const paramUserId = (req.params as { userId?: string }).userId || (req.query.userId as string);
+    const effectiveUserId = paramUserId || (req.user?._id?.toString() ?? '');
+
+    if (!effectiveUserId) {
+      res.status(400).json({ message: 'userId is required' });
+      return;
+    }
+
+    if (!Types.ObjectId.isValid(effectiveUserId)) {
+      res.status(400).json({ message: 'Invalid userId' });
+      return;
+    }
+
+    const isAdmin = req.user?.role === 'admin';
+    const isSameUser = req.user?._id?.toString() === effectiveUserId;
+    if (!isAdmin && !isSameUser) {
+      res.status(403).json({ message: 'Not authorized to view other users orders' });
+      return;
+    }
+
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const skip = (page - 1) * limit;
+
+    const orders = await Order.find({
+      user: new Types.ObjectId(effectiveUserId),
+      status: 'pending_verification'
+    })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('orderCode orderVFC status totalAmount discountAmount promoCode vendor createdAt items orderType')
+      .populate('vendor', 'name email phone')
+      .populate('items.sku', 'title')
+      .populate('product', 'title')
+      .lean();
+
+    const totalCount = await Order.countDocuments({
+      user: new Types.ObjectId(effectiveUserId),
+      status: 'pending_verification'
+    });
+
+    // Transform orders to include vendor phone number
+    const ordersWithVendorPhone = orders.map((order: any) => ({
+      ...order,
+      vendorPhone: order.vendor && typeof order.vendor === 'object' && 'phone' in order.vendor
+        ? order.vendor.phone
+        : null
+    }));
+
+    res.json({
+      data: ordersWithVendorPhone,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalCount,
+        hasNextPage: page < Math.ceil(totalCount / limit),
+        hasPrevPage: page > 1
       }
     });
   }

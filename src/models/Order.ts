@@ -13,7 +13,7 @@ export interface IOrder extends Document {
   }>;
   totalAmount: number;
   paymentMethod: 'online' | 'pickup' | 'cash';
-  status: 'placed' | 'pending_pickup' | 'pending_verification' | 'confirmed' | 'partially_rejected' | 'completed' | 'cancelled';
+  status: 'pending_verification' | 'confirmed' | 'partially_rejected' | 'completed' | 'cancelled';
   orderVFC?: string; // 6-digit alphanumeric code for online purchases
   orderCode?: string; // Unique order code
   pickupAddress?: string; // Vendor address for pickup
@@ -39,7 +39,7 @@ const OrderSchema: Schema = new Schema(
     ],
     totalAmount: { type: Number, default: 0 },
     paymentMethod: { type: String, enum: ['online', 'pickup', 'cash'], default: 'online' },
-    status: { type: String, enum: ['placed', 'pending_pickup', 'pending_verification', 'confirmed', 'partially_rejected', 'completed', 'cancelled'], default: 'placed' },
+    status: { type: String, enum: ['pending_verification', 'confirmed', 'partially_rejected', 'cancelled'], default: 'pending_verification' },
     orderVFC: { type: String }, // 6-digit alphanumeric code for online purchases
     orderCode: { type: String, unique: true }, // Unique order code
     pickupAddress: { type: String },
