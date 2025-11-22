@@ -7,6 +7,8 @@ import { Types } from 'mongoose';
 import { getMondayOfWeek, getSundayOfWeek } from '../utils/dateUtils';
 import { sendMail } from '../services/mailService';
 import { weeklyWarehouseTimingEmailTemplate } from '../helper/template';
+import User from '../models/User';
+const ObjectId = Types.ObjectId;
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -71,7 +73,21 @@ export const addOrUpdateVendorWarehouseTiming = asyncHandler(async (req: Authent
     return;
   }
 
-  const vendor = await Vendor.findById(vendorId);
+  // Find vendor - vendorId can be either vendor._id or user._id
+  // First try to find vendor directly by _id
+  let vendor = await Vendor.findById(vendorId);
+
+  // If not found, try to find user by _id, then find vendor by email/permanentId
+  if (!vendor) {
+    const user = await User.findById(vendorId);
+    if (user && user.role === 'vendor') {
+      vendor = await Vendor.findOne({ email: user.email });
+      if (!vendor) {
+        vendor = await Vendor.findOne({ permanentId: user.permanentId });
+      }
+    }
+  }
+
   if (!vendor) {
     res.status(404).json({ message: 'Vendor not found' });
     return;
@@ -139,7 +155,7 @@ export const addOrUpdateVendorWarehouseTiming = asyncHandler(async (req: Authent
 
   // Check if this is an update (timing already exists)
   const existingTiming = await VendorWarehouseTiming.findOne({
-    vendor: vendorId,
+    vendor: vendor._id,
     weekStartDate: weekStart
   });
 
@@ -185,9 +201,9 @@ export const addOrUpdateVendorWarehouseTiming = asyncHandler(async (req: Authent
 
   // Create or update warehouse timing
   const warehouseTiming = await VendorWarehouseTiming.findOneAndUpdate(
-    { vendor: vendorId, weekStartDate: weekStart },
+    { vendor: vendor._id, weekStartDate: weekStart },
     {
-      vendor: vendorId,
+      vendor: vendor._id,
       weekStartDate: weekStart,
       weekEndDate: weekEnd,
       timings: finalTimings,
@@ -202,7 +218,7 @@ export const addOrUpdateVendorWarehouseTiming = asyncHandler(async (req: Authent
     try {
       // Find all users with pending_verification orders from this vendor
       const pendingOrders = await Order.find({
-        vendor: vendorId,
+        vendor: vendor._id,
         status: 'pending_verification',
         orderType: 'online'
       })
@@ -277,7 +293,20 @@ export const getWarehouseTimings = asyncHandler(async (req: Request, res: Respon
     return;
   }
 
-  const vendor = await Vendor.findById(vendorId);
+  // Find vendor - vendorId can be either vendor._id or user._id
+  let vendor = await Vendor.findById(vendorId);
+
+  // If not found, try to find user by _id, then find vendor by email/permanentId
+  if (!vendor) {
+    const user = await User.findById(vendorId);
+    if (user && user.role === 'vendor') {
+      vendor = await Vendor.findOne({ email: user.email });
+      if (!vendor) {
+        vendor = await Vendor.findOne({ permanentId: user.permanentId });
+      }
+    }
+  }
+
   if (!vendor) {
     res.status(404).json({ message: 'Vendor not found' });
     return;
@@ -309,7 +338,7 @@ export const getWarehouseTimings = asyncHandler(async (req: Request, res: Respon
 
   // Query with range to handle timezone differences
   const warehouseTiming = await VendorWarehouseTiming.findOne({
-    vendor: vendorId,
+    vendor: vendor._id,
     weekStartDate: {
       $gte: queryStart,
       $lt: queryEnd
